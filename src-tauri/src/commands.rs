@@ -84,6 +84,32 @@ pub async fn ingest_pdf(
         }
     }
 
+    // Phase 3.6: internal section headings + cross-references, pure-regex (no LLM).
+    let (sections, references) = crate::ai::extract_sections(&record.raw_text);
+    for s in sections {
+        let _: Option<serde_json::Value> = db
+            .create("sections")
+            .content(serde_json::json!({
+                "doc": record.id.clone(),
+                "label": s.label,
+                "page": s.page,
+            }))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    for r in references {
+        let _: Option<serde_json::Value> = db
+            .create("refs")
+            .content(serde_json::json!({
+                "doc": record.id.clone(),
+                "source_label": r.source_label,
+                "target_label": r.target_label,
+                "page": r.page,
+            }))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
     Ok(DocInfo {
         id: record.id.to_string(),
         name: record.name,
@@ -91,6 +117,34 @@ pub async fn ingest_pdf(
         raw_text: record.raw_text,
         created_at: record.created_at,
     })
+}
+
+#[tauri::command]
+pub async fn list_sections(
+    db: State<'_, Surreal<Db>>,
+    doc_id: String,
+) -> Result<Vec<crate::ai::Section>, String> {
+    let id: Thing = doc_id.parse().map_err(|_| "bad doc id".to_string())?;
+    let mut response = db
+        .query("SELECT label, page FROM sections WHERE doc = $doc")
+        .bind(("doc", id))
+        .await
+        .map_err(|e| e.to_string())?;
+    response.take(0).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_references(
+    db: State<'_, Surreal<Db>>,
+    doc_id: String,
+) -> Result<Vec<crate::ai::Reference>, String> {
+    let id: Thing = doc_id.parse().map_err(|_| "bad doc id".to_string())?;
+    let mut response = db
+        .query("SELECT source_label, target_label, page FROM refs WHERE doc = $doc")
+        .bind(("doc", id))
+        .await
+        .map_err(|e| e.to_string())?;
+    response.take(0).map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize)]

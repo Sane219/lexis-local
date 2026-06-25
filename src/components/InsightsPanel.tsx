@@ -7,16 +7,19 @@ interface Definition {
 }
 
 // Phase 3 (definitions) + Phase 4 (anomaly check) for the selected document.
-export function InsightsPanel({ docId }: { docId: string }) {
-  const [defs, setDefs] = useState<Definition[]>([]);
+// Definitions are fetched once in App and shared with PdfViewer's hover cards.
+export function InsightsPanel({
+  docId,
+  definitions: defs,
+}: {
+  docId: string;
+  definitions: Definition[];
+}) {
   const [anomalies, setAnomalies] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setAnomalies(null);
-    invoke<Definition[]>("list_definitions", { docId })
-      .then(setDefs)
-      .catch(() => setDefs([]));
   }, [docId]);
 
   const check = async () => {

@@ -1,83 +1,84 @@
 # LexisLocal
 
-> Privacy-first, 100% offline PDF intelligence on your desktop.
+> Privacy-first, 100% offline PDF intelligence for your desktop.
 
-LexisLocal ingests your PDFs, lets you ask questions about them, and surfaces
-definitions and anomalies — all without a single byte leaving your machine. No
-API keys, no telemetry, no cloud. The only network call it ever makes is to a
-llama.cpp server running on your own `localhost`, which it starts for you.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.85+-orange)](https://rustup.rs/)
+[![Tauri](https://img.shields.io/badge/Tauri-2-blueviolet)](https://v2.tauri.app)
+[![React](https://img.shields.io/badge/React-19-61DAFB)](https://react.dev)
 
-Built with **Tauri 2** (Rust) + **React/TypeScript/Tailwind**, **SurrealDB**
-(embedded, with native vector search), and **llama.cpp** for local embeddings
-and chat.
+LexisLocal ingests your PDFs, extracts text and definitions, chunks and embeds everything locally, and lets you ask natural-language questions about your documents — **all without a single byte leaving your machine**. No API keys, no telemetry, no cloud. The only network call is to a `llama-server` process on your own `localhost`.
 
 ## Features
 
-- **Local RAG chat** — ask questions about your documents; answers are grounded
-  in the actual text via embedding + M-TREE vector search over chunks.
-- **Selectable PDF text layer** — a pixel-aligned, natively-selectable text
-  overlay on top of the PDF.js canvas (real bounding-box mapping).
-- **Definitions** — key terms and explanations extracted on ingest.
-- **Anomaly check** — flags contradictions, missing clauses, and unusual language.
-- **Liquid navigation** — answers jump the viewer to the source page.
-- **BM25 full-text fallback** when vector search comes up empty.
-- **Auto-spawned AI backend** — the app boots its own `llama-server` on a free
-  port and shuts it down on exit.
+- **Local RAG Chat** — Ask questions about your documents. Answers are grounded in the actual text via embedding similarity search (M-TREE vector index) with BM25 full-text fallback.
+- **Pixel-Perfect PDF Viewer** — A canvas-rendered PDF with a transparent, natively-selectable text overlay via PDF.js. Every text span lines up 1:1 with its canvas bitmap.
+- **Smart Definitions** — Key terms and explanations extracted automatically on ingest via LLM, displayed as hover cards over the PDF text layer.
+- **Anomaly Detection** — Flags contradictions, missing clauses, and unusual language in your documents.
+- **Liquid Navigation** — Answers include the source page number; clicking jumps the PDF viewer directly to that page.
+- **Auto-Spawned AI** — The app boots its own `llama-server` sidecar on a free port and shuts it down on exit.
+- **Embedded Database** — SurrealDB with SurrealKv engine. Zero configuration, no separate server process.
+- **Section Extraction** — Pure-regex section heading detection with cross-reference tracking between sections.
 
-## Requirements
-
-- [Rust](https://rustup.rs/) + the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/)
-  (on Linux: `webkit2gtk`).
-- Node.js 18+.
-- A [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` binary on
-  your `PATH`, and a local GGUF model that serves both chat and the
-  `/v1/embeddings` endpoint (e.g. nomic-embed-text-v1.5, 768-dim).
-
-## Quick start
+## Quick Start
 
 ```bash
+# Prerequisites: Rust, Node.js 18+, llama-server on PATH + a GGUF model
+
+git clone https://github.com/your-org/lexis-local.git
+cd lexis-local
 npm install
+
+# Edit the model path in src-tauri/src/lib.rs:11
+# const MODEL_PATH: &str = "/path/to/your/model.gguf";
+
 npm run tauri dev
 ```
 
-The app auto-spawns `llama-server` using the model at `MODEL_PATH` (top of
-`src-tauri/src/lib.rs` — point this at your GGUF). If the binary or model isn't
-found, the app still launches and falls back to a manually-run server on
-`http://localhost:8080`.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for detailed setup instructions and development commands.
 
-## Development
+## Requirements
 
-```bash
-npm run dev                       # frontend only (Vite)
-npm run build                     # tsc typecheck + vite production build
-npx tsc --noEmit                  # frontend typecheck
-
-cd src-tauri
-cargo check -j 4                  # backend typecheck (use -j 4 — see note)
-cargo test -j 4                   # chunk_text + sidecar lifecycle tests
-```
-
-> **Low-RAM note:** the full Tauri/SurrealDB dependency tree is heavy. Always
-> pass `-j 4` to cargo on memory-constrained machines to avoid OOM during the
-> link step.
-
-See [`plan.md`](./plan.md) for the phased build plan and current status, and
-[`CLAUDE.md`](./CLAUDE.md) for architecture notes.
+- **Rust** (latest stable) + [Tauri 2 system deps](https://v2.tauri.app/start/prerequisites/)
+- **Node.js** 18+
+- **llama-server** binary (from [llama.cpp](https://github.com/ggml-org/llama.cpp)) on `$PATH`
+- A **GGUF model** supporting `/v1/embeddings` and `/v1/chat/completions` (e.g. [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF), 768-dim)
 
 ## Architecture
 
 ```
-PDF bytes ─▶ pdf_extract ─▶ documents row
+PDF bytes ─▶ pdf_extract ─▶ documents table
                               │
                               ├─▶ chunk_text (1024/128) ─▶ embed() ─▶ chunks (+ vector, page)
-                              └─▶ extract_definitions ─▶ definitions
+                              └─▶ extract_definitions ─▶ definitions table
 
-ask(question) ─▶ embed ─▶ KNN vector search (M-TREE) ─▶ context ─▶ chat ─▶ answer (+ page)
+ask(question) ─▶ embed ─▶ M-TREE KNN search ─▶ context ─▶ chat ─▶ answer (+ page)
 ```
 
-- `src-tauri/src/` — Rust backend, one concern per module (`db`, `commands`,
-  `ai`, `lib`).
-- `src/` — React frontend; `App.tsx` holds state, components are presentational.
+**Stack:** Tauri 2 (Rust) · React 19 / TypeScript / Tailwind 4 · SurrealDB (SurrealKv) · PDF.js 6 · llama.cpp (sidecar)
+
+## Documentation Hub
+
+| Document | Description |
+|----------|-------------|
+| [`docs/architecture.md`](./docs/architecture.md) | System architecture with Mermaid diagrams and data flow |
+| [`docs/api-reference.md`](./docs/api-reference.md) | Tauri commands, HTTP endpoints, and SurrealDB schema |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Developer onboarding, setup, and code conventions |
+| [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) | Community guidelines |
+| [`plan.md`](./plan.md) | Phased build plan and current status |
+| [`CLAUDE.md`](./CLAUDE.md) | Agent guide and architecture constraints |
+
+## Development
+
+```bash
+npm run dev            # Frontend only (Vite hot-reload)
+npm run build          # tsc typecheck + Vite production build
+npx tsc --noEmit       # Frontend typecheck only
+
+cd src-tauri && cargo check -j 4 && cargo test -j 4 && cd ..
+```
+
+> Low-RAM note: use `-j 4` with cargo on machines with <16 GB to avoid OOM.
 
 ## License
 

@@ -72,7 +72,9 @@ pub fn run() {
             commands::list_documents,
             commands::ask,
             commands::list_definitions,
-            commands::detect_anomalies
+            commands::detect_anomalies,
+            commands::list_sections,
+            commands::list_references
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

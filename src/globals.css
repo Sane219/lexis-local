@@ -60,3 +60,48 @@ body,
 .textLayer.selecting .endOfContent {
   top: 0;
 }
+
+/* Semantic hover cards (Phase 3.5): a defined term in the transparent text
+   layer gets a dotted underline cue (the span's own text is transparent, so
+   the decoration needs an explicit color), and the popover fades in to convey
+   its appearance as a state change rather than a pop. */
+.textLayer span.lexis-term {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-color: rgb(37 99 235 / 0.65);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+@keyframes lexis-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px) scale(0.98);
+  }
+}
+.lexis-card[data-state="delayed-open"],
+.lexis-card[data-state="instant-open"] {
+  transform-origin: var(--radix-tooltip-content-transform-origin);
+  animation: lexis-card-in 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .lexis-card[data-state] {
+    animation: none;
+  }
+}
+
+/* Cross-reference links (Phase 3.6): the text-layer glyphs are transparent
+   (they overlay the canvas), so a clickable section reference is cued with an
+   underline + faint tint + pointer rather than literal blue text, which would
+   double over the canvas glyphs beneath. */
+.textLayer span.lexis-ref {
+  cursor: pointer;
+  background: rgb(37 99 235 / 0.1);
+  border-radius: 2px;
+  text-decoration: underline solid;
+  text-decoration-color: rgb(37 99 235 / 0.8);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.textLayer span.lexis-ref:hover {
+  background: rgb(37 99 235 / 0.2);
+}

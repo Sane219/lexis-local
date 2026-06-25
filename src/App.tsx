@@ -14,13 +14,45 @@ interface DocInfo {
   created_at: string;
 }
 
+interface Definition {
+  term: string;
+  explanation: string;
+}
+
+interface Section {
+  label: string;
+  page: number;
+}
+
+interface Reference {
+  source_label: string;
+  target_label: string;
+  page: number;
+}
+
 function App() {
   const [documents, setDocuments] = useState<DocInfo[]>([]);
   const [selected, setSelected] = useState<DocInfo | null>(null);
   const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
   const [pageNum, setPageNum] = useState(1);
+  const [definitions, setDefinitions] = useState<Definition[]>([]);
+  const [sections, setSections] = useState<Section[]>([]);
+  const [references, setReferences] = useState<Reference[]>([]);
   const [status, setStatus] = useState<string>("");
   const bytesMap = useRef<Map<string, Uint8Array>>(new Map());
+
+  useEffect(() => {
+    if (!selected) {
+      setDefinitions([]);
+      setSections([]);
+      setReferences([]);
+      return;
+    }
+    const docId = selected.id;
+    invoke<Definition[]>("list_definitions", { docId }).then(setDefinitions).catch(() => setDefinitions([]));
+    invoke<Section[]>("list_sections", { docId }).then(setSections).catch(() => setSections([]));
+    invoke<Reference[]>("list_references", { docId }).then(setReferences).catch(() => setReferences([]));
+  }, [selected]);
 
   const loadDocs = useCallback(async () => {
     try {
@@ -82,8 +114,20 @@ function App() {
         {pdfBytes && selected ? (
           <div>
             <h1 className="text-lg font-semibold mb-2">{selected.name}</h1>
-            <PdfViewer file={pdfBytes} pageNum={pageNum} />
-            <InsightsPanel docId={selected.id} />
+            <PdfViewer
+              file={pdfBytes}
+              pageNum={pageNum}
+              definitions={definitions}
+              sections={sections}
+              onJump={setPageNum}
+            />
+            <InsightsPanel
+              definitions={definitions}
+              references={references}
+              sections={sections}
+              onJump={setPageNum}
+              docId={selected.id}
+            />
           </div>
         ) : (
           <div className="flex items-center justify-center h-full text-gray-400">

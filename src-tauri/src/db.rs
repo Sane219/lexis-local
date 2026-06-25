@@ -29,7 +29,18 @@ pub async fn init_db(app_data_dir: &std::path::Path) -> Result<Surreal<Db>> {
          DEFINE TABLE definitions SCHEMAFULL;
          DEFINE FIELD doc ON definitions TYPE record<documents>;
          DEFINE FIELD term ON definitions TYPE string;
-         DEFINE FIELD explanation ON definitions TYPE string;",
+         DEFINE FIELD explanation ON definitions TYPE string;
+
+         DEFINE TABLE sections SCHEMAFULL;
+         DEFINE FIELD doc ON sections TYPE record<documents>;
+         DEFINE FIELD label ON sections TYPE string;
+         DEFINE FIELD page ON sections TYPE int;
+
+         DEFINE TABLE refs SCHEMAFULL;
+         DEFINE FIELD doc ON refs TYPE record<documents>;
+         DEFINE FIELD source_label ON refs TYPE string;
+         DEFINE FIELD target_label ON refs TYPE string;
+         DEFINE FIELD page ON refs TYPE int;",
         crate::ai::EMBED_DIM
     ))
     .await?;

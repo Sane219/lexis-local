@@ -28,6 +28,8 @@ tokio = { version = "1", features = ["full"] }
 pdf-extract = "0.7"
 anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+regex = "1"
+once_cell = "1"
 
 [dev-dependencies]
 # `test` enables tauri::test::mock_builder for the sidecar lifecycle test.

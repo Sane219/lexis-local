@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Generated
+graphify-out/
+
+# Tooling config
+.claude/
+.opencode/
