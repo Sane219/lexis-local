@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface Definition {
@@ -6,14 +6,32 @@ interface Definition {
   explanation: string;
 }
 
-// Phase 3 (definitions) + Phase 4 (anomaly check) for the selected document.
-// Definitions are fetched once in App and shared with PdfViewer's hover cards.
+interface Section {
+  label: string;
+  page: number;
+}
+
+interface Reference {
+  source_label: string;
+  target_label: string;
+  page: number;
+}
+
+// Phase 3 (definitions) + 3.6 (cross-references) + 4 (anomalies) for the
+// selected document. All structured data is fetched once in App and shared with
+// PdfViewer; this panel is the read-out side of the bidirectional links.
 export function InsightsPanel({
   docId,
   definitions: defs,
+  references,
+  sections,
+  onJump,
 }: {
   docId: string;
   definitions: Definition[];
+  references: Reference[];
+  sections: Section[];
+  onJump: (page: number) => void;
 }) {
   const [anomalies, setAnomalies] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -21,6 +39,23 @@ export function InsightsPanel({
   useEffect(() => {
     setAnomalies(null);
   }, [docId]);
+
+  // Backlinks: per referenced section, the distinct sections that point at it.
+  const backlinks = useMemo(() => {
+    const pageOf = new Map(sections.map((s) => [s.label, s.page]));
+    const byTarget = new Map<string, Set<string>>();
+    for (const r of references) {
+      if (!byTarget.has(r.target_label)) byTarget.set(r.target_label, new Set());
+      byTarget.get(r.target_label)!.add(r.source_label || "Preamble");
+    }
+    return [...byTarget.entries()]
+      .map(([target, sources]) => ({
+        target,
+        page: pageOf.get(target),
+        sources: [...sources],
+      }))
+      .sort((a, b) => a.target.localeCompare(b.target, undefined, { numeric: true }));
+  }, [references, sections]);
 
   const check = async () => {
     setBusy(true);
@@ -50,6 +85,34 @@ export function InsightsPanel({
           </dl>
         )}
       </section>
+
+      <section>
+        <h2 className="text-xs font-semibold text-gray-500 uppercase mb-2">Cross-references</h2>
+        {backlinks.length === 0 ? (
+          <p className="text-xs text-gray-400">No internal references found.</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {backlinks.map((b) => (
+              <li key={b.target} className="text-sm text-gray-700">
+                {b.page ? (
+                  <button
+                    onClick={() => onJump(b.page!)}
+                    className="font-medium text-blue-700 hover:underline"
+                  >
+                    {b.target}
+                  </button>
+                ) : (
+                  <span className="font-medium text-gray-800">{b.target}</span>
+                )}
+                <span className="text-gray-500">
+                  {" "}— referenced by {b.sources.join(", ")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       <section>
         <button
           onClick={check}

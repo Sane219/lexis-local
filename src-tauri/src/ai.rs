@@ -61,6 +61,30 @@ struct Message {
     content: String,
 }
 
+/// One-shot chat completion with a system prompt and user message.
+pub async fn complete_with_system(system: &str, user: &str) -> Result<String, String> {
+    let resp: ChatResp = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", base_url()))
+        .json(&serde_json::json!({
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user }
+            ],
+            "stream": false
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("chat request failed (is llama-server running?): {e}"))?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    resp.choices
+        .into_iter()
+        .next()
+        .map(|c| c.message.content)
+        .ok_or_else(|| "empty chat response".into())
+}
+
 /// One-shot chat completion for an arbitrary prompt.
 pub async fn complete(prompt: &str) -> Result<String, String> {
     let resp: ChatResp = reqwest::Client::new()

@@ -74,7 +74,8 @@ pub fn run() {
             commands::list_definitions,
             commands::detect_anomalies,
             commands::list_sections,
-            commands::list_references
+            commands::list_references,
+            commands::simplify_text
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

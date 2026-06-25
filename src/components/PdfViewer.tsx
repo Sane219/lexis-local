@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import { TextLayer } from "pdfjs-dist";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import { invoke } from "@tauri-apps/api/core";
 
 const workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -51,6 +52,9 @@ export function PdfViewer({
   const wrapRef = useRef<HTMLDivElement>(null);
   const markedRef = useRef<HTMLElement | null>(null);
   const [hover, setHover] = useState<Hover | null>(null);
+  const [selection, setSelection] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [simplifying, setSimplifying] = useState(false);
+  const [summaries, setSummaries] = useState<{ text: string; y: number }[]>([]);
 
   // Terms sorted longest-first so the most specific match wins.
   const terms = useMemo(
@@ -187,50 +191,119 @@ export function PdfViewer({
     setHover(null);
   };
 
+  const handleSimplify = useCallback(async () => {
+    if (!selection || simplifying) return;
+    setSimplifying(true);
+    try {
+      const result = await invoke<string>("simplify_text", { text: selection.text });
+      setSummaries((prev) => [...prev, { text: result, y: selection.y }]);
+      setSelection(null);
+    } catch {
+      setSelection(null);
+    } finally {
+      setSimplifying(false);
+    }
+  }, [selection, simplifying]);
+
+  const onMouseUp = () => {
+    const sel = window.getSelection();
+    const text = sel?.toString().trim();
+    if (!text) {
+      setSelection(null);
+      return;
+    }
+    const range = sel?.getRangeAt(0);
+    const rect = range?.getBoundingClientRect();
+    if (!rect || !wrapRef.current) return;
+    const wrap = wrapRef.current.getBoundingClientRect();
+    setSelection({
+      text,
+      x: rect.left - wrap.left,
+      y: rect.top - wrap.top - 4,
+    });
+  };
+
   if (!file.length) return null;
   return (
     <Tooltip.Provider delayDuration={120}>
-      <div
-        ref={wrapRef}
-        className="relative border border-gray-300 rounded shadow-sm"
-        onMouseOver={onMouseOver}
-        onMouseLeave={clear}
-        onClick={onClick}
-      >
-        <canvas ref={canvasRef} className="block" />
-        <div ref={textLayerRef} className="textLayer" />
-        {hover && (
-          <Tooltip.Root open>
-            <Tooltip.Trigger asChild>
-              <span
-                aria-hidden
-                style={{
-                  position: "absolute",
-                  left: hover.left,
-                  top: hover.top,
-                  width: hover.width,
-                  height: hover.height,
-                  pointerEvents: "none",
-                }}
-              />
-            </Tooltip.Trigger>
-            <Tooltip.Portal>
-              <Tooltip.Content
-                side="top"
-                align="center"
-                sideOffset={6}
-                collisionPadding={8}
-                className="lexis-card z-50 max-w-xs rounded-lg bg-gray-900 px-3 py-2 text-sm text-gray-100 shadow-lg"
+      <div className="flex gap-4">
+        <div
+          ref={wrapRef}
+          className="relative border border-gray-300 rounded shadow-sm shrink-0"
+          onMouseOver={onMouseOver}
+          onMouseLeave={clear}
+          onClick={onClick}
+          onMouseUp={onMouseUp}
+        >
+          <canvas ref={canvasRef} className="block" />
+          <div ref={textLayerRef} className="textLayer" />
+          {hover && (
+            <Tooltip.Root open>
+              <Tooltip.Trigger asChild>
+                <span
+                  aria-hidden
+                  style={{
+                    position: "absolute",
+                    left: hover.left,
+                    top: hover.top,
+                    width: hover.width,
+                    height: hover.height,
+                    pointerEvents: "none",
+                  }}
+                />
+              </Tooltip.Trigger>
+              <Tooltip.Portal>
+                <Tooltip.Content
+                  side="top"
+                  align="center"
+                  sideOffset={6}
+                  collisionPadding={8}
+                  className="lexis-card z-50 max-w-xs rounded-lg bg-gray-900 px-3 py-2 text-sm text-gray-100 shadow-lg"
+                >
+                  <span className="block font-semibold text-white">{hover.term}</span>
+                  <span className="mt-0.5 block leading-snug text-gray-300">
+                    {hover.explanation}
+                  </span>
+                  <Tooltip.Arrow className="fill-gray-900" />
+                </Tooltip.Content>
+              </Tooltip.Portal>
+            </Tooltip.Root>
+          )}
+          {selection && !simplifying && (
+            <button
+              className="absolute z-50 rounded bg-amber-500 px-3 py-1 text-sm font-medium text-white shadow-lg hover:bg-amber-400"
+              style={{ left: selection.x, top: selection.y - 32 }}
+              onMouseDown={(e) => { e.preventDefault(); handleSimplify(); }}
+            >
+              Simplify
+            </button>
+          )}
+          {simplifying && (
+            <div
+              className="absolute z-50 rounded bg-amber-500/80 px-3 py-1 text-sm text-white"
+              style={{ left: selection!.x, top: selection!.y - 32 }}
+            >
+              Simplifying...
+            </div>
+          )}
+        </div>
+        <div className="w-[280px] shrink-0">
+          <div className="text-xs font-semibold text-gray-400 uppercase mb-2">
+            Margin Notes
+          </div>
+          <div className="relative">
+            {summaries.map((s, i) => (
+              <div
+                key={i}
+                className="absolute left-0 right-0 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-snug text-gray-800 shadow-sm"
+                style={{ top: s.y }}
               >
-                <span className="block font-semibold text-white">{hover.term}</span>
-                <span className="mt-0.5 block leading-snug text-gray-300">
-                  {hover.explanation}
-                </span>
-                <Tooltip.Arrow className="fill-gray-900" />
-              </Tooltip.Content>
-            </Tooltip.Portal>
-          </Tooltip.Root>
-        )}
+                <div className="mb-1 text-xs font-semibold text-amber-600">Simplified</div>
+                <p>{s.text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </Tooltip.Provider>
   );

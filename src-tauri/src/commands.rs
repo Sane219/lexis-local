@@ -216,6 +216,17 @@ pub async fn detect_anomalies(db: State<'_, Surreal<Db>>, doc_id: String) -> Res
 }
 
 #[tauri::command]
+pub async fn simplify_text(text: String) -> Result<String, String> {
+    crate::ai::complete_with_system(
+        "You are a helpful assistant that simplifies complex text into plain English. \
+         Keep all key information but make it concise and easy to understand. \
+         Never add information not in the original text.",
+        &text,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn list_documents(db: State<'_, Surreal<Db>>) -> Result<Vec<DocInfo>, String> {
     let mut response = db
         .query("SELECT * FROM documents ORDER BY created_at DESC")
