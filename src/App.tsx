@@ -5,6 +5,7 @@ import { FilePicker } from "./components/FilePicker";
 import { DocumentList } from "./components/DocumentList";
 import { ChatPanel } from "./components/ChatPanel";
 import { InsightsPanel } from "./components/InsightsPanel";
+import { ModelLibrary } from "./components/ModelLibrary";
 
 interface DocInfo {
   id: string;
@@ -94,15 +95,18 @@ function App() {
         <div className="p-3 border-b border-gray-200">
           <FilePicker onFile={handleFile} disabled={status === "Ingesting..."} />
         </div>
-        <div className="flex-1 overflow-y-auto p-3">
-          <h2 className="text-xs font-semibold text-gray-500 uppercase mb-2">
-            Documents
-          </h2>
-          <DocumentList
-            documents={documents}
-            selectedId={selected?.id ?? null}
-            onSelect={handleSelect}
-          />
+        <div className="flex-1 overflow-y-auto p-3 space-y-4">
+          <div>
+            <h2 className="text-xs font-semibold text-gray-500 uppercase mb-2">
+              Documents
+            </h2>
+            <DocumentList
+              documents={documents}
+              selectedId={selected?.id ?? null}
+              onSelect={handleSelect}
+            />
+          </div>
+          <ModelLibrary />
         </div>
         {status && (
           <div className="p-2 text-xs text-gray-500 border-t border-gray-200 truncate">

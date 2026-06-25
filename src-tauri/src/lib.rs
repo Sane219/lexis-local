@@ -75,7 +75,8 @@ pub fn run() {
             commands::detect_anomalies,
             commands::list_sections,
             commands::list_references,
-            commands::simplify_text
+            commands::simplify_text,
+            commands::download_model_llmfit
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

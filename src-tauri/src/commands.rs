@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use surrealdb::engine::local::Db;
 use surrealdb::sql::Thing;
 use surrealdb::Surreal;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_shell::ShellExt;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DocRecord {
@@ -224,6 +225,49 @@ pub async fn simplify_text(text: String) -> Result<String, String> {
         &text,
     )
     .await
+}
+
+#[tauri::command]
+pub async fn download_model_llmfit(app: AppHandle, query: String) -> Result<String, String> {
+    use tauri_plugin_shell::process::CommandEvent;
+
+    let (mut rx, child) = app
+        .shell()
+        .command("llmfit")
+        .args(["download", &query])
+        .spawn()
+        .map_err(|e| format!("failed to spawn llmfit: {e}"))?;
+
+    let app_ = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _child = child;
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
+                    let line = String::from_utf8_lossy(&bytes).trim().to_string();
+                    if !line.is_empty() {
+                        let _ = app_.emit("llmfit-progress", line);
+                    }
+                }
+                CommandEvent::Terminated(payload) => {
+                    let ok = payload.code == Some(0);
+                    if ok {
+                        let _ = app_.emit("llmfit-done", "");
+                    } else {
+                        let _ = app_.emit("llmfit-error", format!("exited with code {:?}", payload.code));
+                    }
+                    break;
+                }
+                CommandEvent::Error(e) => {
+                    let _ = app_.emit("llmfit-error", e);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    Ok(format!("Started downloading {query}"))
 }
 
 #[tauri::command]
