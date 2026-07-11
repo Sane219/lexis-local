@@ -1,6 +1,10 @@
 mod ai;
 mod commands;
 mod db;
+mod documents;
+mod ingest;
+mod pipeline;
+mod repo;
 
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, RunEvent};
