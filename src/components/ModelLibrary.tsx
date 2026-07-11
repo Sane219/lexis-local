@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { info, error as logErr } from "../log";
@@ -42,6 +42,20 @@ interface RecommendModel {
   memory_required_gb?: number;
   license?: string;
   installed?: boolean;
+  gguf_sources?: { provider: string; repo: string }[];
+}
+
+// llama.cpp can only run GGUF. Return the GGUF repo to hand to `llmfit
+// download`, or null if this model has no GGUF source (GPTQ/AWQ/base weights).
+function ggufRepo(m: { gguf_sources?: { repo: string }[] }): string | null {
+  return m.gguf_sources?.[0]?.repo ?? null;
+}
+
+interface DownloadedModel {
+  name: string;
+  path: string;
+  size_gb: number;
+  active: boolean;
 }
 
 interface DepProgress {
@@ -243,13 +257,110 @@ function DepRow({
   );
 }
 
+// ---- installed / active models --------------------------------------------
+
+function InstalledModels({
+  list,
+  switching,
+  onSetActive,
+}: {
+  list: DownloadedModel[];
+  switching: string | null;
+  onSetActive: (path: string) => void;
+}) {
+  if (list.length === 0) return null;
+  return (
+    <div>
+      <h3 className="mb-1.5 text-xs font-semibold uppercase text-gray-500">Installed</h3>
+      <ul className="space-y-1">
+        {list.map((m) => {
+          const isSwitching = switching === m.path;
+          return (
+            <li
+              key={m.path}
+              className={`flex items-center justify-between gap-2 rounded border p-2 text-sm ${
+                m.active ? "border-blue-200 bg-blue-50" : "border-gray-200"
+              }`}
+            >
+              <span className="min-w-0">
+                <span className="flex items-center gap-1.5">
+                  <StatusDot ok={m.active} />
+                  <span className="truncate font-medium text-gray-800">{m.name}</span>
+                </span>
+                <span className="block pl-3.5 text-xs text-gray-500">
+                  {m.size_gb.toFixed(1)} GB
+                </span>
+              </span>
+              {isSwitching ? (
+                <span className="shrink-0 text-xs text-gray-500">Switching…</span>
+              ) : m.active ? (
+                <span className="shrink-0 text-xs font-medium text-blue-700">Active</span>
+              ) : (
+                <button
+                  onClick={() => onSetActive(m.path)}
+                  disabled={switching !== null}
+                  className="shrink-0 rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                >
+                  Set active
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 // ---- model manager (recommend + browse) -----------------------------------
 
 function ModelManager() {
   const [tab, setTab] = useState<"recommended" | "browse">("recommended");
+  const [installed, setInstalled] = useState<DownloadedModel[]>([]);
+  const [switching, setSwitching] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const list = await invoke<DownloadedModel[]>("list_downloaded_models");
+      setInstalled(list);
+      // First model becomes active automatically so chat works without a step.
+      if (list.length > 0 && !list.some((m) => m.active)) {
+        await setActive(list[0].path, list);
+      }
+    } catch (e) {
+      logErr(`Failed to list downloaded models: ${String(e)}`);
+    }
+  }, []);
+
+  const setActive = useCallback(async (path: string, current?: DownloadedModel[]) => {
+    setSwitching(path);
+    try {
+      await invoke("set_active_model", { path });
+      const base = current ?? installed;
+      setInstalled(base.map((m) => ({ ...m, active: m.path === path })));
+      info("Active model switched");
+    } catch (e) {
+      logErr(`Failed to switch model: ${String(e)}`);
+    } finally {
+      setSwitching(null);
+    }
+  }, [installed]);
+
+  useEffect(() => {
+    reload();
+    let alive = true;
+    const un = listen("llmfit-done", () => {
+      if (alive) reload();
+    });
+    return () => {
+      alive = false;
+      un.then((u) => u());
+    };
+  }, [reload]);
 
   return (
     <div className="space-y-3">
+      <InstalledModels list={installed} switching={switching} onSetActive={(p) => setActive(p)} />
       <div className="flex gap-1">
         <TabButton active={tab === "recommended"} onClick={() => setTab("recommended")}>
           Recommended
@@ -307,12 +418,14 @@ function RecommendedTab() {
 
   if (error) return <p className="text-xs text-error">{error}</p>;
   if (!models) return <p className="text-xs text-gray-500">Scoring models for your hardware…</p>;
-  if (models.length === 0)
+  // Only models with a GGUF source can run under llama.cpp; hide the rest.
+  const runnable = models.filter((m) => ggufRepo(m));
+  if (runnable.length === 0)
     return <p className="text-xs text-gray-500">No models fit your current hardware.</p>;
 
   return (
     <ul className="space-y-1.5">
-      {models.map((m) => (
+      {runnable.map((m) => (
         <li key={m.name} className="rounded border border-gray-200 p-2.5 text-sm">
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
@@ -328,7 +441,7 @@ function RecommendedTab() {
             {m.memory_required_gb != null && <span>{m.memory_required_gb.toFixed(1)} GB RAM</span>}
             {m.context_length != null && <span>{(m.context_length / 1000).toFixed(0)}k ctx</span>}
           </div>
-          <InstallButton query={m.name} />
+          <InstallButton query={ggufRepo(m)} />
         </li>
       ))}
     </ul>
@@ -347,7 +460,9 @@ function BrowseTab() {
 
   useEffect(() => {
     invoke<CatalogModel[]>("llmfit_catalog")
-      .then(setCatalog)
+      // Only GGUF-backed models can run under llama.cpp; hide the rest so the
+      // user never hits a model they can't download.
+      .then((list) => setCatalog(list.filter((m) => ggufRepo(m))))
       .catch((e) => setError(String(e)));
   }, []);
 
@@ -440,20 +555,21 @@ function BrowseTab() {
 
       <ul className="space-y-1">
         {shown.map((m) => (
-          <li key={m.name}>
+          <li
+            key={m.name}
+            className="flex items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-gray-100"
+          >
             <button
               onClick={() => setSelected(m)}
-              className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-gray-100"
+              className="min-w-0 flex-1 text-left text-sm"
             >
-              <span className="min-w-0">
-                <span className="block truncate font-medium text-gray-800">{m.name}</span>
-                <span className="block text-xs text-gray-500">
-                  {m.parameter_count} · {m.quantization ?? "—"} ·{" "}
-                  {m.context_length ? `${(m.context_length / 1000).toFixed(0)}k` : "—"} ctx
-                </span>
+              <span className="block truncate font-medium text-gray-800">{m.name}</span>
+              <span className="block text-xs text-gray-500">
+                {m.parameter_count} · {m.quantization ?? "—"} ·{" "}
+                {m.context_length ? `${(m.context_length / 1000).toFixed(0)}k` : "—"} ctx
               </span>
-              <InstallButton query={m.name} compact />
             </button>
+            <InstallButton query={ggufRepo(m)} compact />
           </li>
         ))}
       </ul>
@@ -548,7 +664,7 @@ function ModelDetail({ model, onClose }: { model: CatalogModel; onClose: () => v
           </div>
         )}
         <div className="mt-4">
-          <InstallButton query={model.name} />
+          <InstallButton query={ggufRepo(model)} />
         </div>
       </div>
     </div>
@@ -557,14 +673,17 @@ function ModelDetail({ model, onClose }: { model: CatalogModel; onClose: () => v
 
 // ---- one-click install with live progress --------------------------------
 
-function InstallButton({ query, compact }: { query: string; compact?: boolean }) {
+function InstallButton({ query, compact }: { query: string | null; compact?: boolean }) {
   const [downloading, setDownloading] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<string[]>([]);
+  const [phase, setPhase] = useState<string>("");
   const [pct, setPct] = useState<number | null>(null);
+  const [showLog, setShowLog] = useState(false);
 
   useEffect(() => {
+    if (!query) return;
     const unlistens: UnlistenFn[] = [];
     listen<{ query: string; line: string }>("llmfit-progress", (e) => {
       if (e.payload.query !== query) return;
@@ -572,6 +691,10 @@ function InstallButton({ query, compact }: { query: string; compact?: boolean })
       setLines((l) => [...l.slice(-40), line]);
       const m = line.match(/(\d{1,3})%/);
       if (m) setPct(parseInt(m[1], 10));
+      // Surface a human phase from llmfit's chatter.
+      if (/download/i.test(line)) setPhase("Downloading model…");
+      else if (/fetch|search/i.test(line)) setPhase("Finding best quantization…");
+      else if (/verif|check/i.test(line)) setPhase("Verifying…");
     }).then((u) => unlistens.push(u));
     listen<{ query: string }>("llmfit-done", (e) => {
       if (e.payload.query !== query) return;
@@ -587,42 +710,69 @@ function InstallButton({ query, compact }: { query: string; compact?: boolean })
   }, [query]);
 
   const start = async () => {
+    if (!query) return;
     info(`Installing model: ${query}`);
     setDownloading(true);
     setDone(false);
     setError(null);
     setLines([]);
     setPct(null);
+    setPhase("Starting…");
     try {
       await invoke("download_model_llmfit", { query });
     } catch (e) {
       logErr(`Model install of ${query} failed: ${String(e)}`);
       setDownloading(false);
-      setError(String(e));
+      setError("Couldn't start the download. Please try again.");
     }
   };
 
+  const label = !query
+    ? "Unavailable"
+    : downloading
+      ? "Downloading…"
+      : done
+        ? "Downloaded"
+        : error
+          ? "Retry"
+          : "Install";
+
   return (
-    <div className="mt-2">
+    <div className={compact ? "" : "mt-2"} onClick={(e) => e.stopPropagation()}>
       <button
         onClick={start}
-        disabled={downloading}
+        disabled={downloading || !query || done}
         className={`rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 ${
           compact ? "" : "w-full"
         }`}
       >
-        {downloading ? "Downloading…" : done ? "Downloaded" : "Install"}
+        {label}
       </button>
       {error && <p className="mt-1 text-xs text-error">{error}</p>}
       {downloading && (
         <div className="mt-2">
-          {pct !== null && (
+          {pct !== null ? (
             <div className="h-1.5 w-full overflow-hidden rounded bg-gray-100">
               <div className="h-full bg-blue-600 transition-all" style={{ width: `${pct}%` }} />
             </div>
+          ) : (
+            <div className="h-1.5 w-full overflow-hidden rounded bg-gray-100">
+              <div className="h-full w-1/3 animate-pulse bg-blue-300" />
+            </div>
           )}
-          {lines.length > 0 && (
-            <pre className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-xs text-gray-500">
+          <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
+            <span>{phase}{pct !== null ? ` ${pct}%` : ""}</span>
+            {lines.length > 0 && (
+              <button
+                onClick={() => setShowLog((s) => !s)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                {showLog ? "Hide details" : "Show details"}
+              </button>
+            )}
+          </div>
+          {showLog && lines.length > 0 && (
+            <pre className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-xs text-gray-400">
               {lines.join("\n")}
             </pre>
           )}

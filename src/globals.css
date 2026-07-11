@@ -5,6 +5,12 @@
      brand hue (≈255) so surfaces cohere with the accent instead of reading
      as dead pure gray. Lightness mirrors Tailwind's default gray ramp. */
   --color-gray-50:  oklch(0.985 0.005 255);
+
+  /* Per-module accent — resolved at runtime from --accent* custom properties
+     set on the active page (and each nav item). Wayfinding color, not state. */
+  --color-accent:        var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft:   var(--accent-soft);
   --color-gray-100: oklch(0.967 0.007 255);
   --color-gray-200: oklch(0.928 0.009 255);
   --color-gray-300: oklch(0.872 0.011 255);
@@ -30,6 +36,13 @@ body,
 #root {
   height: 100%;
   margin: 0;
+}
+
+/* Default accent (brand reading-blue) until a page/module overrides it. */
+:root {
+  --accent: oklch(0.55 0.21 255);
+  --accent-strong: oklch(0.45 0.21 255);
+  --accent-soft: oklch(0.97 0.025 255);
 }
 
 /* pdf.js text layer — selectable transparent text over the canvas.

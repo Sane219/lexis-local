@@ -29,7 +29,56 @@ pub fn bin_dir(app: &AppHandle) -> PathBuf {
         .join("bin")
 }
 
-/// Env map that puts our install dir on PATH (+ LLAMA_CPP_PATH) for spawns.
+/// Resolve a tool to run with std::process::Command. Unlike the Tauri shell
+/// plugin, std::process::Command does NOT use the PATH we pass via `.envs()` to
+/// *locate* the binary on Unix — only for the child's env. So we return the
+/// absolute path in our install dir when the binary is there, else fall back to
+/// the bare name (system PATH).
+fn tool_bin(app: &AppHandle, name: &str) -> PathBuf {
+    let p = bin_dir(app).join(name);
+    if p.exists() {
+        p
+    } else {
+        PathBuf::from(name)
+    }
+}
+
+/// Dir GGUF models are downloaded into. Single source of truth: llmfit downloads
+/// here (via LLMFIT_MODELS_DIR) and llama-server loads the active model from here,
+/// so there is never a duplicate multi-GB copy.
+pub fn models_dir(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("lexis-local"))
+        .join("models")
+}
+
+/// File holding the absolute path of the model llama-server should load.
+fn active_model_file(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("lexis-local"))
+        .join("active_model.txt")
+}
+
+/// The active model path, if one is set and the file still exists on disk.
+pub fn get_active_model(app: &AppHandle) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(active_model_file(app)).ok()?;
+    let p = PathBuf::from(raw.trim());
+    p.is_file().then_some(p)
+}
+
+/// Persist the active model path.
+fn write_active_model(app: &AppHandle, path: &Path) -> Result<(), String> {
+    let f = active_model_file(app);
+    if let Some(parent) = f.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&f, path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Env map that puts our install dir on PATH (+ LLAMA_CPP_PATH, + models dir) for
+/// spawns.
 pub fn tool_env(app: &AppHandle) -> HashMap<String, String> {
     let dir = bin_dir(app);
     let mut map = HashMap::new();
@@ -41,7 +90,62 @@ pub fn tool_env(app: &AppHandle) -> HashMap<String, String> {
     };
     map.insert("PATH".into(), new_path);
     map.insert("LLAMA_CPP_PATH".into(), dir.to_string_lossy().to_string());
+    map.insert(
+        "LLMFIT_MODELS_DIR".into(),
+        models_dir(app).to_string_lossy().to_string(),
+    );
     map
+}
+
+#[derive(Serialize)]
+pub struct DownloadedModel {
+    pub name: String,
+    pub path: String,
+    pub size_gb: f64,
+    pub active: bool,
+}
+
+/// List GGUF files downloaded into our models dir, flagging the active one.
+#[tauri::command]
+pub fn list_downloaded_models(app: AppHandle) -> Vec<DownloadedModel> {
+    let active = get_active_model(&app);
+    let dir = models_dir(&app);
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("gguf") {
+                continue;
+            }
+            let size_gb = e.metadata().map(|m| m.len()).unwrap_or(0) as f64 / 1e9;
+            out.push(DownloadedModel {
+                name: p
+                    .file_stem()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string(),
+                active: active.as_deref() == Some(p.as_path()),
+                path: p.to_string_lossy().to_string(),
+                size_gb,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Persist the active model path (validated to live in our models dir). The
+/// caller (lib.rs) restarts llama-server so the change takes effect.
+pub fn set_active_model_path(app: &AppHandle, path: &str) -> Result<(), String> {
+    let p = PathBuf::from(path);
+    if !p.is_file() {
+        return Err("model file not found".into());
+    }
+    let dir = models_dir(app);
+    if !p.starts_with(&dir) {
+        return Err("model is outside the models directory".into());
+    }
+    write_active_model(app, &p)
 }
 
 #[derive(Serialize)]
@@ -72,7 +176,7 @@ fn detect_tool(app: &AppHandle, bin: &str, win_bin: &str) -> Option<String> {
     } else {
         bin
     };
-    let out = Command::new(target)
+    let out = Command::new(tool_bin(app, target))
         .arg("--version")
         .envs(tool_env(app))
         .output()
@@ -194,17 +298,25 @@ fn install_blocking(
     let dest_dir = bin_dir(app);
     std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
     let dest_bin = dest_dir.join(target);
-    std::fs::copy(&extracted, &dest_bin).map_err(|e| format!("install failed: {e}"))?;
-    if os != "windows" {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dest_bin, std::fs::Permissions::from_mode(0o755));
-    }
+    // Prebuilt llama.cpp ships the binary alongside its shared libraries
+    // (libllama*.so, libggml*.so, ...) that it loads via an $ORIGIN rpath. Copy
+    // every file sitting next to the binary, not just the binary, or it fails
+    // at runtime with "error while loading shared libraries".
+    let src_dir = extracted.parent().unwrap_or(&extract_dir);
+    copy_dir_flat(src_dir, &dest_dir).map_err(|e| format!("install failed: {e}"))?;
 
     emit(app, dep, "verifying", "Verifying binary".into(), Some(95));
-    Command::new(&dest_bin)
+    let ver = Command::new(&dest_bin)
         .arg("--version")
+        .envs(tool_env(app))
         .output()
         .map_err(|e| format!("installed binary won't run: {e}"))?;
+    if !ver.status.success() {
+        return Err(format!(
+            "installed binary failed to run: {}",
+            String::from_utf8_lossy(&ver.stderr).trim()
+        ));
+    }
     log(app, "info", &format!("[{dep}] verified, installed at {}", dest_bin.display()));
 
     let _ = std::fs::remove_dir_all(&tmp);
@@ -412,6 +524,29 @@ fn extract(archive: &Path, dest: &Path, target: &str, os: &str) -> Result<PathBu
     find_file(dest, target).ok_or_else(|| format!("could not find {target} in archive"))
 }
 
+/// Copy every regular file directly inside `src` into `dest`, making each
+/// executable on Unix (harmless for the .so files, required for the binary).
+fn copy_dir_flat(src: &Path, dest: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let p = entry?.path();
+        if !p.is_file() {
+            continue;
+        }
+        let name = match p.file_name() {
+            Some(n) => n,
+            None => continue,
+        };
+        let out = dest.join(name);
+        std::fs::copy(&p, &out)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    Ok(())
+}
+
 fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     for e in entries.flatten() {
@@ -430,7 +565,7 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
 // ---- llmfit catalog / recommend / info -----------------------------------
 
 fn llmfit_json(app: &AppHandle, args: &[&str]) -> Result<serde_json::Value, String> {
-    let out = Command::new("llmfit")
+    let out = Command::new(tool_bin(app, "llmfit"))
         .args(args)
         .envs(tool_env(app))
         .output()

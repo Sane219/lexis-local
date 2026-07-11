@@ -125,11 +125,17 @@ pub async fn download_model_llmfit(app: AppHandle, query: String) -> Result<Stri
                         log(&app_, "info", &format!("model {q} download finished"));
                         let _ = app_.emit("llmfit-done", json!({ "query": q }));
                     } else {
-                        let msg = format!("model {q} download failed (exit {:?})", payload.code);
-                        log(&app_, "error", &msg);
+                        log(
+                            &app_,
+                            "error",
+                            &format!("model {q} download failed (exit {:?})", payload.code),
+                        );
                         let _ = app_.emit(
                             "llmfit-error",
-                            json!({ "query": q, "error": msg }),
+                            json!({
+                                "query": q,
+                                "error": "Download failed. Check your connection and try again."
+                            }),
                         );
                     }
                     break;

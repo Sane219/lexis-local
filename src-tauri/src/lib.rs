@@ -11,16 +11,14 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_shell::{process::CommandChild, ShellExt};
 
-// ponytail: GGUF path is configurable via LEXIS_MODEL_PATH; otherwise defaults
-// to ~/.cache/lexis/model.gguf so it isn't tied to one machine.
-fn model_path() -> String {
+// The model llama-server loads: an explicit LEXIS_MODEL_PATH override wins,
+// otherwise the user's chosen active model (downloaded via the Model Library).
+// None means no model is installed yet — the server simply doesn't start.
+fn model_path(app: &AppHandle) -> Option<String> {
     if let Ok(p) = std::env::var("LEXIS_MODEL_PATH") {
-        return p;
+        return Some(p);
     }
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    format!("{home}/.cache/lexis/model.gguf")
+    models::get_active_model(app).map(|p| p.to_string_lossy().to_string())
 }
 const LLAMA_BIN: &str = "llama-server";
 
@@ -31,6 +29,13 @@ struct Sidecar(Mutex<Option<CommandChild>>);
 /// Returns None (and logs) if the binary/model is missing — the app still runs,
 /// AI calls just fail with a clear "is llama-server running?" error.
 fn spawn_llama(app: &AppHandle) -> Option<CommandChild> {
+    let model = match model_path(app) {
+        Some(m) => m,
+        None => {
+            eprintln!("no active model set; llama-server not started (download one to enable AI)");
+            return None;
+        }
+    };
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .ok()?
         .local_addr()
@@ -40,10 +45,10 @@ fn spawn_llama(app: &AppHandle) -> Option<CommandChild> {
     match app
         .shell()
         .command(LLAMA_BIN)
-            .args([
-                "-m",
-                &model_path(),
-                "--host",
+        .args([
+            "-m",
+            &model,
+            "--host",
             "127.0.0.1",
             "--port",
             &port.to_string(),
@@ -66,8 +71,31 @@ fn spawn_llama(app: &AppHandle) -> Option<CommandChild> {
     }
 }
 
+/// Set the active model and restart llama-server so it takes effect.
+#[tauri::command]
+fn set_active_model(app: AppHandle, path: String) -> Result<(), String> {
+    models::set_active_model_path(&app, &path)?;
+    if let Some(sidecar) = app.try_state::<Sidecar>() {
+        let mut guard = sidecar.0.lock().unwrap();
+        if let Some(child) = guard.take() {
+            let _ = child.kill();
+        }
+        *guard = spawn_llama(&app);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's DMABUF renderer spams libEGL/MESA/ZINK errors and can fail to
+    // create a screen on Linux boxes without working hardware GL (VMs, software
+    // rendering). Disabling it forces the stable fallback path. Harmless
+    // no-op on macOS/Windows.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
@@ -97,6 +125,8 @@ pub fn run() {
             models::llmfit_catalog,
             models::llmfit_recommend,
             models::llmfit_model_info,
+            models::list_downloaded_models,
+            set_active_model,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
