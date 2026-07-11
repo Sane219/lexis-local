@@ -26,10 +26,12 @@ pub async fn init_db(app_data_dir: &std::path::Path) -> Result<Surreal<Db>> {
          DEFINE ANALYZER doc_text TOKENIZERS blank,class FILTERS lowercase;
          DEFINE INDEX chunk_text ON chunks FIELDS text SEARCH ANALYZER doc_text BM25;
 
-         DEFINE TABLE definitions SCHEMAFULL;
-         DEFINE FIELD doc ON definitions TYPE record<documents>;
-         DEFINE FIELD term ON definitions TYPE string;
-         DEFINE FIELD explanation ON definitions TYPE string;
+          DEFINE TABLE definitions SCHEMAFULL;
+          DEFINE FIELD doc ON definitions TYPE record<documents>;
+          DEFINE FIELD term ON definitions TYPE string;
+          DEFINE FIELD explanation ON definitions TYPE string;
+
+          DEFINE TABLE same_term TYPE EDGE;
 
          DEFINE TABLE sections SCHEMAFULL;
          DEFINE FIELD doc ON sections TYPE record<documents>;

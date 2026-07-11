@@ -17,8 +17,8 @@ cd lexis-local
 # Install JavaScript dependencies
 npm install
 
-# Set your model path (edit src-tauri/src/lib.rs)
-# Line 11: const MODEL_PATH: &str = "/path/to/your/model.gguf";
+# Point at your GGUF model (defaults to ~/.cache/lexis/model.gguf)
+export LEXIS_MODEL_PATH=/path/to/your/model.gguf
 
 # Run in development mode
 npm run tauri dev

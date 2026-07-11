@@ -85,6 +85,24 @@ pub async fn ingest_pdf(
         }
     }
 
+    // Phase 3 (graph edges) + 4.4 (multi-doc merge): link this doc's definitions
+    // to same-term definitions in *other* docs via `same_term` edges, both
+    // directions so either side can traverse the link regardless of ingest order.
+    db
+        .query(
+            "LET $defs = SELECT * FROM definitions WHERE doc = $doc;
+             FOR $d IN $defs {
+               LET $matches = SELECT * FROM definitions WHERE doc != $doc AND lower(term) = lower($d.term);
+               FOR $m IN $matches {
+                 RELATE $d -> same_term -> $m;
+                 RELATE $m -> same_term -> $d;
+               }
+             }",
+        )
+        .bind(("doc", record.id.clone()))
+        .await
+        .map_err(|e| e.to_string())?;
+
     // Phase 3.6: internal section headings + cross-references, pure-regex (no LLM).
     let (sections, references) = crate::ai::extract_sections(&record.raw_text);
     for s in sections {
@@ -197,6 +215,41 @@ pub async fn list_definitions(
     let id: Thing = doc_id.parse().map_err(|_| "bad doc id".to_string())?;
     let mut response = db
         .query("SELECT term, explanation FROM definitions WHERE doc = $doc")
+        .bind(("doc", id))
+        .await
+        .map_err(|e| e.to_string())?;
+    response.take(0).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OtherDef {
+    pub term: String,
+    pub explanation: String,
+    pub doc_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CrossLink {
+    pub term: String,
+    pub explanation: String,
+    pub matches: Vec<OtherDef>,
+}
+
+/// Phase 4.4: surface the cross-document definition graph for one doc by
+/// traversing the `same_term` edges written at ingest. Returns each term
+/// defined here with the matching terms found in other documents.
+#[tauri::command]
+pub async fn cross_doc_links(
+    db: State<'_, Surreal<Db>>,
+    doc_id: String,
+) -> Result<Vec<CrossLink>, String> {
+    let id: Thing = doc_id.parse().map_err(|_| "bad doc id".to_string())?;
+    let mut response = db
+        .query(
+            "SELECT term, explanation,
+                    (->same_term->definitions.{ term, explanation, doc_name: doc.name }) AS matches
+             FROM definitions WHERE doc = $doc",
+        )
         .bind(("doc", id))
         .await
         .map_err(|e| e.to_string())?;

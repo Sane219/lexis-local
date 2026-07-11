@@ -6,9 +6,17 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_shell::{process::CommandChild, ShellExt};
 
-// ponytail: GGUF path is hardcoded for now (the plan's JIT-download is deferred).
-// Point this at a local model that supports both chat and the /v1/embeddings endpoint.
-const MODEL_PATH: &str = "/home/sanket/.cache/lexis/model.gguf";
+// ponytail: GGUF path is configurable via LEXIS_MODEL_PATH; otherwise defaults
+// to ~/.cache/lexis/model.gguf so it isn't tied to one machine.
+fn model_path() -> String {
+    if let Ok(p) = std::env::var("LEXIS_MODEL_PATH") {
+        return p;
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
+    format!("{home}/.cache/lexis/model.gguf")
+}
 const LLAMA_BIN: &str = "llama-server";
 
 /// Holds the spawned llama.cpp child so we can kill it on app exit.
@@ -27,10 +35,10 @@ fn spawn_llama(app: &AppHandle) -> Option<CommandChild> {
     match app
         .shell()
         .command(LLAMA_BIN)
-        .args([
-            "-m",
-            MODEL_PATH,
-            "--host",
+            .args([
+                "-m",
+                &model_path(),
+                "--host",
             "127.0.0.1",
             "--port",
             &port.to_string(),
@@ -75,6 +83,7 @@ pub fn run() {
             commands::detect_anomalies,
             commands::list_sections,
             commands::list_references,
+            commands::cross_doc_links,
             commands::simplify_text,
             commands::download_model_llmfit
         ])

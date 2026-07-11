@@ -17,6 +17,18 @@ interface Reference {
   page: number;
 }
 
+interface OtherDef {
+  term: string;
+  explanation: string;
+  doc_name: string;
+}
+
+interface CrossLink {
+  term: string;
+  explanation: string;
+  matches: OtherDef[];
+}
+
 // Phase 3 (definitions) + 3.6 (cross-references) + 4 (anomalies) for the
 // selected document. All structured data is fetched once in App and shared with
 // PdfViewer; this panel is the read-out side of the bidirectional links.
@@ -25,12 +37,14 @@ export function InsightsPanel({
   definitions: defs,
   references,
   sections,
+  crossLinks,
   onJump,
 }: {
   docId: string;
   definitions: Definition[];
   references: Reference[];
   sections: Section[];
+  crossLinks: CrossLink[];
   onJump: (page: number) => void;
 }) {
   const [anomalies, setAnomalies] = useState<string | null>(null);
@@ -110,6 +124,34 @@ export function InsightsPanel({
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      <section>
+        <h2 className="text-xs font-semibold text-gray-500 uppercase mb-2">
+          Cross-document links
+        </h2>
+        {crossLinks.length === 0 ? (
+          <p className="text-xs text-gray-400">No terms shared with other documents.</p>
+        ) : (
+          <dl className="space-y-2">
+            {crossLinks.map((c) => (
+              <div key={c.term} className="text-sm">
+                <dt className="font-medium text-gray-800">{c.term}</dt>
+                <dd className="text-gray-600">{c.explanation}</dd>
+                <dd className="mt-0.5 text-xs text-violet-700">
+                  Also in:{" "}
+                  {c.matches.map((m, i) => (
+                    <span key={i}>
+                      {i > 0 && ", "}
+                      <span className="font-medium">{m.doc_name}</span>
+                      <span className="text-gray-500"> — {m.explanation}</span>
+                    </span>
+                  ))}
+                </dd>
+              </div>
+            ))}
+          </dl>
         )}
       </section>
 

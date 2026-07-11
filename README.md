@@ -29,8 +29,8 @@ git clone https://github.com/your-org/lexis-local.git
 cd lexis-local
 npm install
 
-# Edit the model path in src-tauri/src/lib.rs:11
-# const MODEL_PATH: &str = "/path/to/your/model.gguf";
+# Point at your GGUF model (defaults to ~/.cache/lexis/model.gguf)
+export LEXIS_MODEL_PATH=/path/to/your/model.gguf
 
 npm run tauri dev
 ```

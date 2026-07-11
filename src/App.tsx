@@ -31,6 +31,18 @@ interface Reference {
   page: number;
 }
 
+interface OtherDef {
+  term: string;
+  explanation: string;
+  doc_name: string;
+}
+
+interface CrossLink {
+  term: string;
+  explanation: string;
+  matches: OtherDef[];
+}
+
 function App() {
   const [documents, setDocuments] = useState<DocInfo[]>([]);
   const [selected, setSelected] = useState<DocInfo | null>(null);
@@ -39,6 +51,7 @@ function App() {
   const [definitions, setDefinitions] = useState<Definition[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [references, setReferences] = useState<Reference[]>([]);
+  const [crossLinks, setCrossLinks] = useState<CrossLink[]>([]);
   const [status, setStatus] = useState<string>("");
   const bytesMap = useRef<Map<string, Uint8Array>>(new Map());
 
@@ -53,6 +66,7 @@ function App() {
     invoke<Definition[]>("list_definitions", { docId }).then(setDefinitions).catch(() => setDefinitions([]));
     invoke<Section[]>("list_sections", { docId }).then(setSections).catch(() => setSections([]));
     invoke<Reference[]>("list_references", { docId }).then(setReferences).catch(() => setReferences([]));
+    invoke<CrossLink[]>("cross_doc_links", { docId }).then(setCrossLinks).catch(() => setCrossLinks([]));
   }, [selected]);
 
   const loadDocs = useCallback(async () => {
@@ -129,6 +143,7 @@ function App() {
               definitions={definitions}
               references={references}
               sections={sections}
+              crossLinks={crossLinks}
               onJump={setPageNum}
               docId={selected.id}
             />
