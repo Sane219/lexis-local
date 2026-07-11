@@ -5,8 +5,10 @@ use serde_json::json;
 use surrealdb::engine::local::Db;
 use surrealdb::Surreal;
 
-/// Emit a `log` event the frontend log console subscribes to.
+/// Emit a `log` event the frontend log console subscribes to. Also printed to
+/// the terminal (tauri dev).
 fn log(app: &AppHandle, level: &str, msg: &str) {
+    eprintln!("[lexis][{level}] {msg}");
     let _ = app.emit("log", json!({ "level": level, "msg": msg }));
 }
 

@@ -17,6 +17,10 @@ const listeners = new Set<Listener>();
 export function pushLog(level: LogLevel, msg: string) {
   entries.push({ t: Date.now(), level, msg });
   if (entries.length > MAX) entries.splice(0, entries.length - MAX);
+  const tag = `[lexis][${level}]`;
+  if (level === "error") console.error(tag, msg);
+  else if (level === "warn") console.warn(tag, msg);
+  else console.log(tag, msg);
   listeners.forEach((l) => l(entries));
 }
 

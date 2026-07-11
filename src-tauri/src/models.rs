@@ -9,8 +9,10 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// Emit a `log` event the frontend log console subscribes to. Every notable
 /// backend action (install steps, download failures, command errors) goes here
-/// so nothing fails silently.
+/// so nothing fails silently. Also printed to the terminal (tauri dev) so the
+/// same line is visible in both places.
 fn log(app: &AppHandle, level: &str, msg: &str) {
+    eprintln!("[lexis][{level}] {msg}");
     let _ = app.emit("log", json!({ "level": level, "msg": msg }));
 }
 
