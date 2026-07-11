@@ -9,13 +9,8 @@ pub async fn init_db(app_data_dir: &std::path::Path) -> Result<Surreal<Db>> {
     let db = Surreal::new::<SurrealKv>(db_path).await?;
     db.use_ns("lexis").use_db("lexis").await?;
 
-    db.query(format!(
-        "DEFINE TABLE documents SCHEMAFULL;
-         DEFINE FIELD name ON documents TYPE string;
-         DEFINE FIELD page_count ON documents TYPE int;
-         DEFINE FIELD raw_text ON documents TYPE string;
-         DEFINE FIELD created_at ON documents TYPE datetime DEFAULT time::now();
-
+    let schema = format!(
+        "{}\n
          DEFINE TABLE chunks SCHEMAFULL;
          DEFINE FIELD doc ON chunks TYPE record<documents>;
          DEFINE FIELD text ON chunks TYPE string;
@@ -31,7 +26,7 @@ pub async fn init_db(app_data_dir: &std::path::Path) -> Result<Surreal<Db>> {
           DEFINE FIELD term ON definitions TYPE string;
           DEFINE FIELD explanation ON definitions TYPE string;
 
-          DEFINE TABLE same_term TYPE EDGE;
+          DEFINE TABLE same_term TYPE ANY;
 
          DEFINE TABLE sections SCHEMAFULL;
          DEFINE FIELD doc ON sections TYPE record<documents>;
@@ -43,9 +38,10 @@ pub async fn init_db(app_data_dir: &std::path::Path) -> Result<Surreal<Db>> {
          DEFINE FIELD source_label ON refs TYPE string;
          DEFINE FIELD target_label ON refs TYPE string;
          DEFINE FIELD page ON refs TYPE int;",
+        crate::documents::schema_ddl(),
         crate::ai::EMBED_DIM
-    ))
-    .await?;
+    );
+    db.query(schema).await?;
 
     Ok(db)
 }
