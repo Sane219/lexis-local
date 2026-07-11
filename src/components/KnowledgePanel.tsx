@@ -1,7 +1,4 @@
 import { useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { errMsg } from "../utils";
-import { info, error } from "../log";
 import { moduleStyle } from "../modules";
 
 interface Definition {

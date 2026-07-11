@@ -85,6 +85,22 @@ fn set_active_model(app: AppHandle, path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Delete a downloaded model file. If it was the active model, kill
+/// llama-server rather than leave it serving a now-deleted file.
+#[tauri::command]
+fn delete_model(app: AppHandle, path: String) -> Result<(), String> {
+    let was_active = models::delete_model(&app, path)?;
+    if was_active {
+        if let Some(sidecar) = app.try_state::<Sidecar>() {
+            let mut guard = sidecar.0.lock().unwrap();
+            if let Some(child) = guard.take() {
+                let _ = child.kill();
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebKitGTK's DMABUF renderer spams libEGL/MESA/ZINK errors and can fail to
@@ -122,11 +138,13 @@ pub fn run() {
             commands::download_model_llmfit,
             models::tool_status,
             models::install_dependency,
-            models::llmfit_catalog,
             models::llmfit_recommend,
             models::llmfit_model_info,
+            models::llmfit_search,
+            models::llmfit_catalog_providers,
             models::list_downloaded_models,
             set_active_model,
+            delete_model,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

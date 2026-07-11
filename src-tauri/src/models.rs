@@ -580,23 +580,143 @@ fn llmfit_json(app: &AppHandle, args: &[&str]) -> Result<serde_json::Value, Stri
     serde_json::from_slice(&out.stdout).map_err(|e| format!("failed to parse llmfit json: {e}"))
 }
 
-/// Full, unlimited model catalog from `llmfit list --json` (embedded DB, no
-/// network). Frontend does search/sort/filter client-side.
-#[tauri::command]
-pub fn llmfit_catalog(app: AppHandle) -> Result<serde_json::Value, String> {
-    llmfit_json(&app, &["list", "--json"])
-}
-
-/// Hardware-fit recommendations from `llmfit recommend --json`.
+/// Hardware-fit recommendations from `llmfit recommend --json`, restricted to
+/// the llama.cpp runtime — this app only ever runs a single llama-server, so a
+/// vLLM/MLX recommendation (which `recommend`'s default "any" runtime picks on
+/// GPU/Apple-Silicon boxes) would never actually be runnable here. Includes the
+/// detected `system` hardware profile in the response.
 #[tauri::command]
 pub fn llmfit_recommend(app: AppHandle) -> Result<serde_json::Value, String> {
-    llmfit_json(&app, &["recommend", "--json"])
+    llmfit_json(
+        &app,
+        &[
+            "recommend",
+            "--json",
+            "--runtime",
+            "llamacpp",
+            "--force-runtime",
+            "llamacpp",
+            "-n",
+            "24",
+            "--output-llamacpp",
+        ],
+    )
 }
 
-/// Full spec + fit analysis for one model from `llmfit info <name> --json`.
+/// Full spec + live hardware-fit analysis for one model from
+/// `llmfit info <name> --json`.
 #[tauri::command]
 pub fn llmfit_model_info(app: AppHandle, name: String) -> Result<serde_json::Value, String> {
     llmfit_json(&app, &["info", &name, "--json"])
+}
+
+/// In-process cache of the embedded model catalog (`llmfit list --json`),
+/// narrowed to GGUF-backed entries — the only ones llama.cpp can run. The full
+/// catalog is several thousand entries and a few MB of JSON; loading it once
+/// per process and searching in Rust keeps every IPC payload small instead of
+/// shipping the whole thing to the frontend.
+static CATALOG_CACHE: std::sync::OnceLock<Vec<serde_json::Value>> = std::sync::OnceLock::new();
+
+fn gguf_catalog(app: &AppHandle) -> Result<&'static Vec<serde_json::Value>, String> {
+    if let Some(cached) = CATALOG_CACHE.get() {
+        return Ok(cached);
+    }
+    let raw = llmfit_json(app, &["list", "--json"])?;
+    let entries = raw
+        .as_array()
+        .cloned()
+        .ok_or_else(|| "unexpected llmfit list output shape".to_string())?
+        .into_iter()
+        .filter(|m| {
+            m.get("gguf_sources")
+                .and_then(|s| s.as_array())
+                .is_some_and(|a| !a.is_empty())
+        })
+        .collect::<Vec<_>>();
+    Ok(CATALOG_CACHE.get_or_init(|| entries))
+}
+
+/// Search the GGUF-backed catalog by name/provider, capped at `limit` (default
+/// 60, max 200) results so the page never ships thousands of rows over IPC.
+#[tauri::command]
+pub fn llmfit_search(
+    app: AppHandle,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let catalog = gguf_catalog(&app)?;
+    let q = query.trim().to_lowercase();
+    let cap = limit.unwrap_or(60).min(200);
+
+    let mut hits: Vec<&serde_json::Value> = catalog
+        .iter()
+        .filter(|m| {
+            if q.is_empty() {
+                return true;
+            }
+            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            let provider = m
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            name.contains(&q) || provider.contains(&q)
+        })
+        .collect();
+
+    // Prefix matches on the name surface first, then largest models within
+    // each tier — mirrors how a user scanning search results expects the most
+    // relevant, most capable match near the top.
+    hits.sort_by(|a, b| {
+        let name_a = a.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+        let name_b = b.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+        let prefix_a = !q.is_empty() && name_a.contains(&q) && name_a.starts_with(&q);
+        let prefix_b = !q.is_empty() && name_b.contains(&q) && name_b.starts_with(&q);
+        prefix_b
+            .cmp(&prefix_a)
+            .then_with(|| {
+                let pa = a.get("parameters_raw").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let pb = b.get("parameters_raw").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    Ok(hits.into_iter().take(cap).cloned().collect())
+}
+
+/// Distinct providers present in the GGUF-backed catalog, for the search
+/// filter dropdown — computed once from the same cache as `llmfit_search`.
+#[tauri::command]
+pub fn llmfit_catalog_providers(app: AppHandle) -> Result<Vec<String>, String> {
+    let catalog = gguf_catalog(&app)?;
+    let mut providers: Vec<String> = catalog
+        .iter()
+        .filter_map(|m| m.get("provider").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    providers.sort();
+    providers.dedup();
+    Ok(providers)
+}
+
+/// Delete a downloaded GGUF file. Refuses to touch anything outside the
+/// managed models directory. Returns whether the deleted model was active, so
+/// the caller (lib.rs) can stop llama-server without it.
+pub fn delete_model(app: &AppHandle, path: String) -> Result<bool, String> {
+    let p = PathBuf::from(&path);
+    let dir = models_dir(app);
+    if !p.starts_with(&dir) {
+        return Err("model is outside the models directory".into());
+    }
+    if !p.is_file() {
+        return Err("model file not found".into());
+    }
+    let was_active = get_active_model(app).as_deref() == Some(p.as_path());
+    std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+    if was_active {
+        let _ = std::fs::remove_file(active_model_file(app));
+    }
+    log(app, "info", &format!("deleted model {path}"));
+    Ok(was_active)
 }
 
 #[derive(Clone)]

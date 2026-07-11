@@ -52,9 +52,72 @@ pub async fn list_references(
 pub async fn ask(
     db: State<'_, Surreal<Db>>,
     question: String,
+    doc_id: Option<String>,
 ) -> Result<repo::AskResult, String> {
     let llm = ai::HttpLlm;
-    repo::ask(&db, &llm, question).await
+    repo::ask(&db, &llm, question, doc_id).await
+}
+
+#[tauri::command]
+pub async fn count_definitions(db: State<'_, Surreal<Db>>) -> Result<u32, String> {
+    repo::count_definitions(&db).await
+}
+
+#[tauri::command]
+pub async fn count_chunks(db: State<'_, Surreal<Db>>, doc_id: String) -> Result<u32, String> {
+    repo::count_chunks(&db, doc_id).await
+}
+
+#[tauri::command]
+pub async fn delete_document(db: State<'_, Surreal<Db>>, doc_id: String) -> Result<(), String> {
+    repo::delete_document(&db, doc_id).await
+}
+
+#[tauri::command]
+pub async fn search_chunks(
+    db: State<'_, Surreal<Db>>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<repo::SearchHit>, String> {
+    repo::search_chunks(&db, query, limit).await
+}
+
+#[tauri::command]
+pub async fn save_chat_message(
+    db: State<'_, Surreal<Db>>,
+    doc_id: Option<String>,
+    question: String,
+    answer: String,
+    page: Option<u32>,
+) -> Result<(), String> {
+    repo::save_chat_message(&db, doc_id, question, answer, page).await
+}
+
+#[tauri::command]
+pub async fn list_chat_messages(
+    db: State<'_, Surreal<Db>>,
+    doc_id: Option<String>,
+) -> Result<Vec<repo::ChatMessageRow>, String> {
+    repo::list_chat_messages(&db, doc_id).await
+}
+
+#[tauri::command]
+pub async fn save_simplification(
+    db: State<'_, Surreal<Db>>,
+    doc_id: String,
+    page: u32,
+    original: String,
+    simplified: String,
+) -> Result<(), String> {
+    repo::save_simplification(&db, doc_id, page, original, simplified).await
+}
+
+#[tauri::command]
+pub async fn list_simplifications(
+    db: State<'_, Surreal<Db>>,
+    doc_id: String,
+) -> Result<Vec<repo::SimplificationRow>, String> {
+    repo::list_simplifications(&db, doc_id).await
 }
 
 #[tauri::command]

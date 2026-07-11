@@ -39,7 +39,7 @@ export function ChatPanel({ onNavigate }: { onNavigate?: (page: number) => void 
   };
 
   return (
-    <div className="flex flex-col h-full border-l border-gray-200 w-96">
+    <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto p-3 space-y-3" role="log" aria-live="polite">
         {messages.length === 0 && (
           <p className="text-xs text-gray-500">Ask a question about your documents.</p>

@@ -1,15 +1,63 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { info, error as logErr } from "../log";
+import { errMsg } from "../utils";
 
-// ---- types ----------------------------------------------------------------
+// ---- types ------------------------------------------------------------------
+// Shapes below are transcribed from actually invoking `llmfit` (v1.1.2) on this
+// machine — `system`, `recommend --json --runtime llamacpp --output-llamacpp`,
+// `list --json`, and `info <name> --json` — not assumed from docs.
 
 interface ToolStatus {
   llmfit_installed: boolean;
   llama_cpp_installed: boolean;
   llmfit_version: string | null;
   llama_cpp_version: string | null;
+}
+
+interface SystemInfo {
+  cpu_name: string;
+  cpu_cores: number;
+  total_ram_gb: number;
+  available_ram_gb: number;
+  has_gpu: boolean;
+  gpu_name: string | null;
+  gpu_vram_gb: number | null;
+  backend: string;
+}
+
+interface GgufSource {
+  provider: string;
+  repo: string;
+}
+
+interface RecommendModel {
+  name: string;
+  provider: string;
+  parameter_count: string;
+  best_quant?: string;
+  capabilities?: string[];
+  category?: string;
+  context_length?: number;
+  disk_size_gb?: number;
+  estimated_tps?: number;
+  fit_level?: "Perfect" | "Good" | "Marginal" | string;
+  memory_required_gb?: number;
+  memory_available_gb?: number;
+  utilization_pct?: number;
+  license?: string | null;
+  installed?: boolean;
+  use_case?: string;
+  runtime_label?: string;
+  verify_command?: string | null;
+  notes?: string[];
+  gguf_sources?: GgufSource[];
+}
+
+interface RecommendResponse {
+  system: SystemInfo;
+  models: RecommendModel[];
 }
 
 interface CatalogModel {
@@ -25,30 +73,9 @@ interface CatalogModel {
   use_case?: string;
   is_moe?: boolean;
   capabilities?: string[];
-  license?: string;
-  gguf_sources?: { provider: string; repo: string }[];
-  architecture?: string;
-}
-
-interface RecommendModel {
-  name: string;
-  best_quant?: string;
-  capabilities?: string[];
-  category?: string;
-  context_length?: number;
-  disk_size_gb?: number;
-  estimated_tps?: number;
-  fit_level?: string;
-  memory_required_gb?: number;
-  license?: string;
-  installed?: boolean;
-  gguf_sources?: { provider: string; repo: string }[];
-}
-
-// llama.cpp can only run GGUF. Return the GGUF repo to hand to `llmfit
-// download`, or null if this model has no GGUF source (GPTQ/AWQ/base weights).
-function ggufRepo(m: { gguf_sources?: { repo: string }[] }): string | null {
-  return m.gguf_sources?.[0]?.repo ?? null;
+  license?: string | null;
+  gguf_sources?: GgufSource[];
+  architecture?: string | null;
 }
 
 interface DownloadedModel {
@@ -64,31 +91,47 @@ interface DepProgress {
   percent: number | null;
 }
 
-// ---- helpers --------------------------------------------------------------
+const CAPABILITIES = ["tool_use", "vision", "audio", "tts"] as const;
+
+// llama.cpp can only run GGUF. Return the GGUF repo to hand to `llmfit
+// download`, or null if this model has no GGUF source (GPTQ/AWQ/base weights).
+function ggufRepo(m: { gguf_sources?: GgufSource[] }): string | null {
+  return m.gguf_sources?.[0]?.repo ?? null;
+}
+
+function fitTone(level?: string): { bg: string; text: string; label: string } {
+  switch (level) {
+    case "Perfect":
+      return { bg: "bg-success-bg", text: "text-success", label: "Fits well" };
+    case "Good":
+      return { bg: "bg-info/10", text: "text-info", label: "Fits" };
+    case "Marginal":
+      return { bg: "bg-warning/15", text: "text-warning", label: "Tight fit" };
+    default:
+      return { bg: "bg-gray-100", text: "text-gray-500", label: level ?? "Unknown" };
+  }
+}
 
 function StatusDot({ ok }: { ok: boolean }) {
   return (
     <span
-      className={`inline-block h-2 w-2 rounded-full ${ok ? "bg-success" : "bg-gray-400"}`}
+      className={`inline-block h-2 w-2 shrink-0 rounded-full ${ok ? "bg-success" : "bg-gray-300"}`}
       aria-hidden="true"
     />
   );
 }
 
-function fmtParams(p: CatalogModel | RecommendModel): string {
-  if ("parameter_count" in p && p.parameter_count) return p.parameter_count;
-  if ("disk_size_gb" in p && p.disk_size_gb) return `${p.disk_size_gb} GB`;
-  return "—";
-}
-
-// ---- main component -------------------------------------------------------
+// ---- root ---------------------------------------------------------------
 
 export function ModelLibrary() {
   const [status, setStatus] = useState<ToolStatus | null>(null);
   const [depProgress, setDepProgress] = useState<Record<string, DepProgress>>({});
   const [installing, setInstalling] = useState<Record<string, boolean>>({});
 
-  const loadStatus = () => invoke<ToolStatus>("tool_status").then(setStatus).catch(() => setStatus(null));
+  const loadStatus = useCallback(
+    () => invoke<ToolStatus>("tool_status").then(setStatus).catch(() => setStatus(null)),
+    [],
+  );
 
   useEffect(() => {
     loadStatus();
@@ -109,7 +152,7 @@ export function ModelLibrary() {
       alive = false;
       unlistens.forEach((u) => u());
     };
-  }, []);
+  }, [loadStatus]);
 
   const install = async (dependency: "llama_cpp" | "llmfit") => {
     info(`Installing ${dependency}`);
@@ -117,10 +160,10 @@ export function ModelLibrary() {
     try {
       await invoke("install_dependency", { dependency });
     } catch (e) {
-      logErr(`Install of ${dependency} failed: ${String(e)}`);
+      logErr(`Install of ${dependency} failed: ${errMsg(e)}`);
       setDepProgress((p) => ({
         ...p,
-        [dependency]: { stage: "error", detail: String(e), percent: null },
+        [dependency]: { stage: "error", detail: errMsg(e), percent: null },
       }));
       setInstalling((s) => ({ ...s, [dependency]: false }));
     }
@@ -129,25 +172,24 @@ export function ModelLibrary() {
   const ready = status?.llama_cpp_installed && status?.llmfit_installed;
 
   return (
-    <div className="space-y-3">
-      <h2 className="text-xs font-semibold text-gray-500 uppercase">Model Library</h2>
+    <div className="space-y-6">
+      <header>
+        <h1 className="text-lg font-semibold text-gray-900">Models</h1>
+        <p className="mt-0.5 text-sm text-gray-500">
+          Local inference, powered by llama.cpp. Everything here runs on this device — nothing is
+          uploaded.
+        </p>
+      </header>
 
-      {!status || !status.llama_cpp_installed || !status.llmfit_installed ? (
-        <SetupView
-          status={status}
-          installing={installing}
-          progress={depProgress}
-          onInstall={install}
-        />
-      ) : null}
-
-      {ready ? (
-        <ModelManager />
-      ) : status?.llama_cpp_installed && !status.llmfit_installed ? (
-        <p className="text-xs text-gray-600">
+      {!ready && (
+        <SetupView status={status} installing={installing} progress={depProgress} onInstall={install} />
+      )}
+      {ready && <Hub />}
+      {!ready && status?.llama_cpp_installed && !status.llmfit_installed && (
+        <p className="text-sm text-gray-500">
           llama.cpp is installed — llmfit is still required to browse and download models.
         </p>
-      ) : null}
+      )}
     </div>
   );
 }
@@ -166,29 +208,31 @@ function SetupView({
   onInstall: (d: "llama_cpp" | "llmfit") => void;
 }) {
   return (
-    <div className="space-y-2">
-      <p className="text-xs text-gray-600">
-        LexisLocal needs two local tools to run models fully offline. Both are
-        installed into the app's data folder — your system is not modified.
+    <div className="space-y-2 rounded-md border border-gray-200 p-4">
+      <p className="text-sm text-gray-600">
+        LexisLocal needs two local tools to run models fully offline. Both install into the app's
+        own data folder — your system is not modified.
       </p>
-      <DepRow
-        title="llama.cpp"
-        subtitle="The local inference server (llama-server)."
-        installed={status?.llama_cpp_installed ?? false}
-        version={status?.llama_cpp_version ?? null}
-        busy={installing["llama_cpp"] ?? false}
-        progress={progress["llama_cpp"]}
-        onInstall={() => onInstall("llama_cpp")}
-      />
-      <DepRow
-        title="llmfit"
-        subtitle="Discovers, scores, and downloads GGUF models."
-        installed={status?.llmfit_installed ?? false}
-        version={status?.llmfit_version ?? null}
-        busy={installing["llmfit"] ?? false}
-        progress={progress["llmfit"]}
-        onInstall={() => onInstall("llmfit")}
-      />
+      <div className="space-y-2 pt-1">
+        <DepRow
+          title="llama.cpp"
+          subtitle="The local inference server (llama-server)."
+          installed={status?.llama_cpp_installed ?? false}
+          version={status?.llama_cpp_version ?? null}
+          busy={installing["llama_cpp"] ?? false}
+          progress={progress["llama_cpp"]}
+          onInstall={() => onInstall("llama_cpp")}
+        />
+        <DepRow
+          title="llmfit"
+          subtitle="Discovers, scores, and downloads GGUF models for your hardware."
+          installed={status?.llmfit_installed ?? false}
+          version={status?.llmfit_version ?? null}
+          busy={installing["llmfit"] ?? false}
+          progress={progress["llmfit"]}
+          onInstall={() => onInstall("llmfit")}
+        />
+      </div>
     </div>
   );
 }
@@ -213,7 +257,7 @@ function DepRow({
   const pct = progress?.percent ?? null;
   const errored = progress?.stage === "error";
   return (
-    <div className="rounded border border-gray-200 p-2.5">
+    <div className="rounded-md border border-gray-200 p-3">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -221,15 +265,15 @@ function DepRow({
             <span className="text-sm font-medium text-gray-800">{title}</span>
             {version && <span className="text-xs text-gray-500">{version}</span>}
           </div>
-          <p className="text-xs text-gray-500">{subtitle}</p>
+          <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p>
         </div>
         {installed ? (
-          <span className="text-xs font-medium text-success">Installed</span>
+          <span className="shrink-0 text-xs font-medium text-success">Installed</span>
         ) : (
           <button
             onClick={onInstall}
             disabled={busy}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {busy ? "Installing…" : "Install"}
           </button>
@@ -238,88 +282,28 @@ function DepRow({
       {busy && progress && (
         <div className="mt-2">
           {pct !== null && (
-            <div className="h-1.5 w-full overflow-hidden rounded bg-gray-100">
-              <div
-                className="h-full bg-blue-600 transition-all"
-                style={{ width: `${pct}%` }}
-              />
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+              <div className="h-full bg-accent transition-all" style={{ width: `${pct}%` }} />
             </div>
           )}
-          <p className={`mt-1 text-xs ${errored ? "text-error" : "text-gray-500"}`}>
-            {progress.detail}
-          </p>
+          <p className={`mt-1 text-xs ${errored ? "text-error" : "text-gray-500"}`}>{progress.detail}</p>
         </div>
       )}
-      {errored && progress && (
-        <p className="mt-1 text-xs text-error">{progress.detail}</p>
-      )}
     </div>
   );
 }
 
-// ---- installed / active models --------------------------------------------
+// ---- hub: hardware + installed + recommended + search --------------------
 
-function InstalledModels({
-  list,
-  switching,
-  onSetActive,
-}: {
-  list: DownloadedModel[];
-  switching: string | null;
-  onSetActive: (path: string) => void;
-}) {
-  if (list.length === 0) return null;
-  return (
-    <div>
-      <h3 className="mb-1.5 text-xs font-semibold uppercase text-gray-500">Installed</h3>
-      <ul className="space-y-1">
-        {list.map((m) => {
-          const isSwitching = switching === m.path;
-          return (
-            <li
-              key={m.path}
-              className={`flex items-center justify-between gap-2 rounded border p-2 text-sm ${
-                m.active ? "border-blue-200 bg-blue-50" : "border-gray-200"
-              }`}
-            >
-              <span className="min-w-0">
-                <span className="flex items-center gap-1.5">
-                  <StatusDot ok={m.active} />
-                  <span className="truncate font-medium text-gray-800">{m.name}</span>
-                </span>
-                <span className="block pl-3.5 text-xs text-gray-500">
-                  {m.size_gb.toFixed(1)} GB
-                </span>
-              </span>
-              {isSwitching ? (
-                <span className="shrink-0 text-xs text-gray-500">Switching…</span>
-              ) : m.active ? (
-                <span className="shrink-0 text-xs font-medium text-blue-700">Active</span>
-              ) : (
-                <button
-                  onClick={() => onSetActive(m.path)}
-                  disabled={switching !== null}
-                  className="shrink-0 rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
-                >
-                  Set active
-                </button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
-// ---- model manager (recommend + browse) -----------------------------------
-
-function ModelManager() {
-  const [tab, setTab] = useState<"recommended" | "browse">("recommended");
+function Hub() {
+  const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [recommended, setRecommended] = useState<RecommendModel[] | null>(null);
+  const [recError, setRecError] = useState<string | null>(null);
   const [installed, setInstalled] = useState<DownloadedModel[]>([]);
   const [switching, setSwitching] = useState<string | null>(null);
+  const [tab, setTab] = useState<"recommended" | "search">("recommended");
 
-  const reload = useCallback(async () => {
+  const loadInstalled = useCallback(async () => {
     try {
       const list = await invoke<DownloadedModel[]>("list_downloaded_models");
       setInstalled(list);
@@ -328,48 +312,89 @@ function ModelManager() {
         await setActive(list[0].path, list);
       }
     } catch (e) {
-      logErr(`Failed to list downloaded models: ${String(e)}`);
+      logErr(`Failed to list downloaded models: ${errMsg(e)}`);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const setActive = useCallback(async (path: string, current?: DownloadedModel[]) => {
     setSwitching(path);
     try {
       await invoke("set_active_model", { path });
-      const base = current ?? installed;
-      setInstalled(base.map((m) => ({ ...m, active: m.path === path })));
+      setInstalled((base) => (current ?? base).map((m) => ({ ...m, active: m.path === path })));
       info("Active model switched");
     } catch (e) {
-      logErr(`Failed to switch model: ${String(e)}`);
+      logErr(`Failed to switch model: ${errMsg(e)}`);
     } finally {
       setSwitching(null);
     }
-  }, [installed]);
+  }, []);
+
+  const loadRecommended = useCallback(async () => {
+    try {
+      const r = await invoke<RecommendResponse>("llmfit_recommend");
+      setSystem(r.system);
+      setRecommended(r.models);
+      setRecError(null);
+    } catch (e) {
+      setRecError(errMsg(e));
+    }
+  }, []);
 
   useEffect(() => {
-    reload();
+    loadInstalled();
+    loadRecommended();
     let alive = true;
     const un = listen("llmfit-done", () => {
-      if (alive) reload();
+      if (alive) {
+        loadInstalled();
+        loadRecommended();
+      }
     });
     return () => {
       alive = false;
       un.then((u) => u());
     };
-  }, [reload]);
+  }, [loadInstalled, loadRecommended]);
+
+  const deleteInstalled = useCallback(async (path: string) => {
+    try {
+      await invoke("delete_model", { path });
+      setInstalled((list) => list.filter((m) => m.path !== path));
+      info("Model deleted");
+    } catch (e) {
+      logErr(`Failed to delete model: ${errMsg(e)}`);
+    }
+  }, []);
 
   return (
-    <div className="space-y-3">
-      <InstalledModels list={installed} switching={switching} onSetActive={(p) => setActive(p)} />
-      <div className="flex gap-1">
-        <TabButton active={tab === "recommended"} onClick={() => setTab("recommended")}>
-          Recommended
-        </TabButton>
-        <TabButton active={tab === "browse"} onClick={() => setTab("browse")}>
-          Browse all
-        </TabButton>
+    <div className="space-y-6">
+      {system && <HardwareBar system={system} />}
+
+      <InstalledSection
+        list={installed}
+        switching={switching}
+        onSetActive={(p) => setActive(p)}
+        onDelete={deleteInstalled}
+      />
+
+      <div>
+        <div className="flex gap-1 border-b border-gray-200">
+          <TabButton active={tab === "recommended"} onClick={() => setTab("recommended")}>
+            Recommended for your hardware
+          </TabButton>
+          <TabButton active={tab === "search"} onClick={() => setTab("search")}>
+            Search catalog
+          </TabButton>
+        </div>
+        <div className="pt-4">
+          {tab === "recommended" ? (
+            <RecommendedGrid models={recommended} error={recError} installed={installed} />
+          ) : (
+            <SearchPanel installed={installed} />
+          )}
+        </div>
       </div>
-      {tab === "recommended" ? <RecommendedTab /> : <BrowseTab />}
     </div>
   );
 }
@@ -386,8 +411,11 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`rounded px-2.5 py-1 text-xs font-medium ${
-        active ? "bg-blue-100 text-blue-900" : "text-gray-600 hover:bg-gray-100"
+      aria-current={active ? "page" : undefined}
+      className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+        active
+          ? "border-accent text-accent-strong"
+          : "border-transparent text-gray-500 hover:text-gray-700"
       }`}
     >
       {children}
@@ -395,135 +423,340 @@ function TabButton({
   );
 }
 
+// ---- hardware profile ------------------------------------------------------
+
+function HardwareBar({ system }: { system: SystemInfo }) {
+  const stats: { label: string; value: string }[] = [
+    { label: "CPU", value: `${system.cpu_name} · ${system.cpu_cores} cores` },
+    { label: "RAM", value: `${system.available_ram_gb.toFixed(1)} / ${system.total_ram_gb.toFixed(1)} GB free` },
+    {
+      label: system.has_gpu ? "GPU" : "Backend",
+      value: system.has_gpu
+        ? `${system.gpu_name ?? "GPU"} · ${system.gpu_vram_gb?.toFixed(1) ?? "?"} GB VRAM`
+        : `${system.backend} (CPU-only)`,
+    },
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-md bg-accent-soft px-4 py-3">
+      {stats.map((s) => (
+        <div key={s.label} className="text-sm">
+          <span className="font-medium text-accent-strong">{s.label}</span>
+          <span className="ml-1.5 text-gray-600">{s.value}</span>
+        </div>
+      ))}
+      <span className="text-xs text-gray-500">
+        Recommendations below are scored against this hardware.
+      </span>
+    </div>
+  );
+}
+
+// ---- installed models management -------------------------------------------
+
+function InstalledSection({
+  list,
+  switching,
+  onSetActive,
+  onDelete,
+}: {
+  list: DownloadedModel[];
+  switching: string | null;
+  onSetActive: (path: string) => void;
+  onDelete: (path: string) => void;
+}) {
+  if (list.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-gray-300 px-4 py-6 text-center">
+        <p className="text-sm text-gray-500">
+          No models installed yet — pick one below to get chat and definitions working.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+        Installed ({list.length})
+      </h2>
+      <ul className="divide-y divide-gray-200 rounded-md border border-gray-200">
+        {list.map((m) => {
+          const isSwitching = switching === m.path;
+          return (
+            <li key={m.path} className="flex items-center justify-between gap-3 px-3 py-2.5">
+              <span className="flex min-w-0 items-center gap-2">
+                <StatusDot ok={m.active} />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium text-gray-800">{m.name}</span>
+                  <span className="block text-xs text-gray-500">{m.size_gb.toFixed(1)} GB on disk</span>
+                </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                {isSwitching ? (
+                  <span className="text-xs text-gray-500">Switching…</span>
+                ) : m.active ? (
+                  <span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-strong">
+                    Active
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => onSetActive(m.path)}
+                    disabled={switching !== null}
+                    className="rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                  >
+                    Set active
+                  </button>
+                )}
+                <DeleteButton onConfirm={() => onDelete(m.path)} />
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+// Two-step delete (click once to arm, again to confirm) instead of a modal —
+// the destructive action stays inline where the user already is.
+function DeleteButton({ onConfirm }: { onConfirm: () => void }) {
+  const [armed, setArmed] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
+
+  if (armed) {
+    return (
+      <button
+        onClick={() => {
+          if (timer.current) clearTimeout(timer.current);
+          setArmed(false);
+          onConfirm();
+        }}
+        className="rounded-md bg-error px-2 py-1 text-xs font-medium text-white hover:opacity-90"
+      >
+        Confirm delete
+      </button>
+    );
+  }
+  return (
+    <button
+      onClick={() => {
+        setArmed(true);
+        timer.current = setTimeout(() => setArmed(false), 3000);
+      }}
+      className="rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-500 hover:border-error hover:text-error"
+      aria-label="Delete model"
+    >
+      Delete
+    </button>
+  );
+}
+
+// ---- fit / spec chips -------------------------------------------------------
+
 function FitBadge({ level }: { level?: string }) {
   if (!level) return null;
-  const cls =
-    level.toLowerCase() === "perfect" || level.toLowerCase() === "good"
-      ? "bg-success-bg text-success"
-      : "bg-gray-100 text-gray-600";
+  const tone = fitTone(level);
   return (
-    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${cls}`}>{level}</span>
+    <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tone.bg} ${tone.text}`}>
+      {tone.label}
+    </span>
   );
 }
 
-function RecommendedTab() {
-  const [models, setModels] = useState<RecommendModel[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function MemoryBar({ required, available }: { required?: number; available?: number }) {
+  if (required == null || available == null || available <= 0) return null;
+  const pct = Math.min(100, Math.round((required / available) * 100));
+  const color = pct >= 95 ? "bg-warning" : "bg-accent";
+  return (
+    <div className="mt-1.5">
+      <div className="h-1 w-full overflow-hidden rounded-full bg-gray-100">
+        <div className={`h-full ${color}`} style={{ width: `${pct}%` }} />
+      </div>
+      <p className="mt-1 text-xs text-gray-500">
+        {required.toFixed(1)} GB of {available.toFixed(1)} GB available ({pct}%)
+      </p>
+    </div>
+  );
+}
 
-  useEffect(() => {
-    invoke<{ models: RecommendModel[] }>("llmfit_recommend")
-      .then((r) => setModels(r.models))
-      .catch((e) => setError(String(e)));
-  }, []);
+// ---- recommended grid -------------------------------------------------------
 
-  if (error) return <p className="text-xs text-error">{error}</p>;
-  if (!models) return <p className="text-xs text-gray-500">Scoring models for your hardware…</p>;
-  // Only models with a GGUF source can run under llama.cpp; hide the rest.
+function RecommendedGrid({
+  models,
+  error,
+  installed,
+}: {
+  models: RecommendModel[] | null;
+  error: string | null;
+  installed: DownloadedModel[];
+}) {
+  if (error) return <p className="text-sm text-error">{error}</p>;
+  if (!models) return <p className="text-sm text-gray-500">Scoring models for your hardware…</p>;
+
   const runnable = models.filter((m) => ggufRepo(m));
-  if (runnable.length === 0)
-    return <p className="text-xs text-gray-500">No models fit your current hardware.</p>;
+  if (runnable.length === 0) {
+    return (
+      <p className="text-sm text-gray-500">
+        No llama.cpp-compatible models fit your current hardware. Try Search catalog for smaller
+        quantizations.
+      </p>
+    );
+  }
+
+  const installedRepos = new Set(installed.map((m) => m.name));
 
   return (
-    <ul className="space-y-1.5">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {runnable.map((m) => (
-        <li key={m.name} className="rounded border border-gray-200 p-2.5 text-sm">
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <div className="truncate font-medium text-gray-800">{m.name}</div>
-              <div className="text-xs text-gray-500">
-                {fmtParams(m)} · {m.best_quant ?? "—"} · {m.category ?? "general"}
-              </div>
-            </div>
-            <FitBadge level={m.fit_level} />
-          </div>
-          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500">
-            {m.estimated_tps != null && <span>{m.estimated_tps.toFixed(1)} tok/s</span>}
-            {m.memory_required_gb != null && <span>{m.memory_required_gb.toFixed(1)} GB RAM</span>}
-            {m.context_length != null && <span>{(m.context_length / 1000).toFixed(0)}k ctx</span>}
-          </div>
-          <InstallButton query={ggufRepo(m)} />
-        </li>
+        <RecommendedCard
+          key={m.name}
+          model={m}
+          alreadyInstalled={[...installedRepos].some((n) => m.name.toLowerCase().includes(n.toLowerCase()))}
+        />
       ))}
-    </ul>
+    </div>
   );
 }
 
-function BrowseTab() {
-  const [catalog, setCatalog] = useState<CatalogModel[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function RecommendedCard({
+  model: m,
+  alreadyInstalled,
+}: {
+  model: RecommendModel;
+  alreadyInstalled: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="flex flex-col rounded-md border border-gray-200 p-3 transition-colors hover:border-accent/40">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-gray-900">{m.name}</p>
+          <p className="text-xs text-gray-500">
+            {m.provider} · {m.parameter_count} · {m.best_quant ?? "—"}
+          </p>
+        </div>
+        <FitBadge level={m.fit_level} />
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-600">
+        {m.estimated_tps != null && <span>~{m.estimated_tps.toFixed(0)} tok/s</span>}
+        {m.context_length != null && <span>{(m.context_length / 1000).toFixed(0)}k context</span>}
+        {m.disk_size_gb != null && <span>{m.disk_size_gb.toFixed(1)} GB download</span>}
+      </div>
+
+      {m.capabilities && m.capabilities.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {m.capabilities.map((c) => (
+            <span key={c} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600">
+              {c}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <MemoryBar required={m.memory_required_gb} available={m.memory_available_gb} />
+
+      {(m.notes?.length || m.verify_command) && (
+        <button
+          onClick={() => setExpanded((e) => !e)}
+          className="mt-2 self-start text-xs font-medium text-accent-strong hover:underline"
+        >
+          {expanded ? "Hide details" : "Details"}
+        </button>
+      )}
+      {expanded && (
+        <div className="mt-1.5 space-y-1 border-t border-gray-100 pt-2">
+          {m.notes?.map((n, i) => (
+            <p key={i} className="text-xs text-gray-500">
+              {n}
+            </p>
+          ))}
+          {m.verify_command && (
+            <code className="block truncate rounded bg-gray-50 px-1.5 py-1 text-xs text-gray-500">
+              {m.verify_command}
+            </code>
+          )}
+        </div>
+      )}
+
+      <div className="mt-auto pt-2">
+        {alreadyInstalled ? (
+          <span className="block rounded-md border border-gray-200 px-3 py-1.5 text-center text-xs font-medium text-gray-500">
+            Already installed
+          </span>
+        ) : (
+          <InstallButton query={ggufRepo(m)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---- search catalog ---------------------------------------------------------
+
+function SearchPanel({ installed }: { installed: DownloadedModel[] }) {
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<"name" | "params" | "context" | "ram">("name");
   const [provider, setProvider] = useState("");
   const [capability, setCapability] = useState("");
-  const [useCase, setUseCase] = useState("");
-  const [selected, setSelected] = useState<CatalogModel | null>(null);
+  const [sort, setSort] = useState<"relevance" | "params" | "context" | "ram">("relevance");
+  const [providers, setProviders] = useState<string[]>([]);
+  const [results, setResults] = useState<CatalogModel[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedName, setExpandedName] = useState<string | null>(null);
 
   useEffect(() => {
-    invoke<CatalogModel[]>("llmfit_catalog")
-      // Only GGUF-backed models can run under llama.cpp; hide the rest so the
-      // user never hits a model they can't download.
-      .then((list) => setCatalog(list.filter((m) => ggufRepo(m))))
-      .catch((e) => setError(String(e)));
+    invoke<string[]>("llmfit_catalog_providers").then(setProviders).catch(() => setProviders([]));
   }, []);
 
-  const providers = useMemo(
-    () => unique(catalog?.map((m) => m.provider) ?? []),
-    [catalog],
-  );
-  const capabilities = useMemo(
-    () => unique((catalog ?? []).flatMap((m) => m.capabilities ?? [])),
-    [catalog],
-  );
-  const useCases = useMemo(() => unique(catalog?.map((m) => m.use_case ?? "") ?? []), [catalog]);
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      invoke<CatalogModel[]>("llmfit_search", { query, limit: 60 })
+        .then((r) => setResults(r))
+        .catch((e) => setError(errMsg(e)));
+    }, 200);
+    return () => clearTimeout(handle);
+  }, [query]);
 
   const filtered = useMemo(() => {
-    if (!catalog) return [];
-    const q = query.trim().toLowerCase();
-    let list = catalog.filter((m) => {
-      if (q && !m.name.toLowerCase().includes(q) && !m.provider.toLowerCase().includes(q))
-        return false;
+    if (!results) return [];
+    let list = results.filter((m) => {
       if (provider && m.provider !== provider) return false;
       if (capability && !(m.capabilities ?? []).includes(capability)) return false;
-      if (useCase && (m.use_case ?? "") !== useCase) return false;
       return true;
     });
-    list = [...list].sort((a, b) => {
-      switch (sort) {
-        case "params":
-          return (b.parameters_raw ?? 0) - (a.parameters_raw ?? 0);
-        case "context":
-          return (b.context_length ?? 0) - (a.context_length ?? 0);
-        case "ram":
-          return (a.recommended_ram_gb ?? 0) - (b.recommended_ram_gb ?? 0);
-        default:
-          return a.name.localeCompare(b.name);
-      }
-    });
+    if (sort !== "relevance") {
+      list = [...list].sort((a, b) => {
+        switch (sort) {
+          case "params":
+            return (b.parameters_raw ?? 0) - (a.parameters_raw ?? 0);
+          case "context":
+            return (b.context_length ?? 0) - (a.context_length ?? 0);
+          case "ram":
+            return (a.recommended_ram_gb ?? 0) - (b.recommended_ram_gb ?? 0);
+          default:
+            return 0;
+        }
+      });
+    }
     return list;
-  }, [catalog, query, sort, provider, capability, useCase]);
+  }, [results, provider, capability, sort]);
 
-  if (error) return <p className="text-xs text-error">{error}</p>;
-  if (!catalog) return <p className="text-xs text-gray-500">Loading model catalog…</p>;
-
-  const shown = filtered.slice(0, 200);
+  const installedNames = new Set(installed.map((m) => m.name));
 
   return (
-    <div className="space-y-2">
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search models…"
-        className="w-full rounded-md border border-gray-300 p-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-      />
+    <div className="space-y-3">
       <div className="flex flex-wrap gap-2">
-        <Select value={sort} onChange={(v) => setSort(v as typeof sort)} label="Sort">
-          <option value="name">Name</option>
-          <option value="params">Parameters</option>
-          <option value="context">Context</option>
-          <option value="ram">RAM</option>
-        </Select>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search 1,000+ GGUF models by name or provider…"
+          className="min-w-[240px] flex-1 rounded-md border border-gray-300 p-2 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+        />
         <Select value={provider} onChange={setProvider} label="Provider">
-          <option value="">All</option>
+          <option value="">All providers</option>
           {providers.map((p) => (
             <option key={p} value={p}>
               {p}
@@ -531,51 +764,43 @@ function BrowseTab() {
           ))}
         </Select>
         <Select value={capability} onChange={setCapability} label="Capability">
-          <option value="">All</option>
-          {capabilities.map((c) => (
+          <option value="">Any capability</option>
+          {CAPABILITIES.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
           ))}
         </Select>
-        <Select value={useCase} onChange={setUseCase} label="Use case">
-          <option value="">All</option>
-          {useCases.map((u) => (
-            <option key={u} value={u}>
-              {u || "—"}
-            </option>
-          ))}
+        <Select value={sort} onChange={(v) => setSort(v as typeof sort)} label="Sort">
+          <option value="relevance">Relevance</option>
+          <option value="params">Parameters</option>
+          <option value="context">Context</option>
+          <option value="ram">RAM needed</option>
         </Select>
       </div>
 
-      <p className="text-xs text-gray-500">
-        {filtered.length.toLocaleString()} models
-        {filtered.length > shown.length && ` · showing first ${shown.length}`}
-      </p>
+      {error && <p className="text-sm text-error">{error}</p>}
+      {!error && !results && <p className="text-sm text-gray-500">Loading catalog…</p>}
+      {!error && results && (
+        <p className="text-xs text-gray-500">
+          {filtered.length} model{filtered.length === 1 ? "" : "s"}
+          {results.length >= 60 && " (showing top 60 matches — refine your search for more)"}
+        </p>
+      )}
 
-      <ul className="space-y-1">
-        {shown.map((m) => (
-          <li
+      <ul className="divide-y divide-gray-200 rounded-md border border-gray-200">
+        {filtered.map((m) => (
+          <SearchRow
             key={m.name}
-            className="flex items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-gray-100"
-          >
-            <button
-              onClick={() => setSelected(m)}
-              className="min-w-0 flex-1 text-left text-sm"
-            >
-              <span className="block truncate font-medium text-gray-800">{m.name}</span>
-              <span className="block text-xs text-gray-500">
-                {m.parameter_count} · {m.quantization ?? "—"} ·{" "}
-                {m.context_length ? `${(m.context_length / 1000).toFixed(0)}k` : "—"} ctx
-              </span>
-            </button>
-            <InstallButton query={ggufRepo(m)} compact />
-          </li>
+            model={m}
+            expanded={expandedName === m.name}
+            onToggle={() => setExpandedName((n) => (n === m.name ? null : m.name))}
+            alreadyInstalled={installedNames.has(m.name)}
+          />
         ))}
       </ul>
-
-      {selected && (
-        <ModelDetail model={selected} onClose={() => setSelected(null)} />
+      {results && filtered.length === 0 && (
+        <p className="px-1 text-sm text-gray-500">No matches. Try a different search or provider.</p>
       )}
     </div>
   );
@@ -593,12 +818,12 @@ function Select({
   children: React.ReactNode;
 }) {
   return (
-    <label className="flex items-center gap-1 text-xs text-gray-500">
-      {label}
+    <label className="flex items-center gap-1.5 text-xs text-gray-500">
+      <span className="sr-only">{label}</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded border border-gray-300 px-1.5 py-1 text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-400"
+        className="rounded-md border border-gray-300 px-2 py-2 text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-accent"
       >
         {children}
       </select>
@@ -606,67 +831,109 @@ function Select({
   );
 }
 
-function ModelDetail({ model, onClose }: { model: CatalogModel; onClose: () => void }) {
-  const rows: [string, string | undefined][] = [
-    ["Provider", model.provider],
-    ["Parameters", model.parameter_count],
-    ["Quantization", model.quantization],
-    ["Context length", model.context_length?.toLocaleString()],
-    ["Min RAM", model.min_ram_gb != null ? `${model.min_ram_gb} GB` : undefined],
-    ["Recommended RAM", model.recommended_ram_gb != null ? `${model.recommended_ram_gb} GB` : undefined],
-    ["Min VRAM", model.min_vram_gb != null ? `${model.min_vram_gb} GB` : undefined],
-    ["Architecture", model.architecture],
-    ["Use case", model.use_case],
-    ["License", model.license],
-    ["MoE", model.is_moe ? "yes" : "no"],
-  ];
+// A row expands in place to show live hardware-fit analysis (`llmfit info`),
+// fetched only on demand — no modal, no dialog stacking.
+function SearchRow({
+  model: m,
+  expanded,
+  onToggle,
+  alreadyInstalled,
+}: {
+  model: CatalogModel;
+  expanded: boolean;
+  onToggle: () => void;
+  alreadyInstalled: boolean;
+}) {
+  const [fit, setFit] = useState<RecommendModel | null>(null);
+  const [fitError, setFitError] = useState<string | null>(null);
+  const [loadingFit, setLoadingFit] = useState(false);
+
+  useEffect(() => {
+    if (!expanded || fit || loadingFit) return;
+    setLoadingFit(true);
+    invoke<RecommendResponse>("llmfit_model_info", { name: m.name })
+      .then((r) => setFit(r.models[0] ?? null))
+      .catch((e) => setFitError(errMsg(e)))
+      .finally(() => setLoadingFit(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded]);
+
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
-      <div
-        className="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-lg border border-gray-200 bg-white p-4 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-      >
-        <div className="flex items-start justify-between gap-2">
-          <h3 className="text-sm font-semibold text-gray-900">{model.name}</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-800" aria-label="Close">
-            ✕
-          </button>
-        </div>
-        <dl className="mt-3 space-y-1.5">
-          {rows
-            .filter(([, v]) => v !== undefined)
-            .map(([k, v]) => (
-              <div key={k} className="flex justify-between gap-3 text-sm">
-                <dt className="text-gray-500">{k}</dt>
-                <dd className="text-right text-gray-800">{v}</dd>
-              </div>
-            ))}
-        </dl>
-        {model.capabilities && model.capabilities.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1">
-            {model.capabilities.map((c) => (
-              <span key={c} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600">
-                {c}
-              </span>
-            ))}
+    <li>
+      <button onClick={onToggle} className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left hover:bg-gray-50">
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-medium text-gray-800">{m.name}</span>
+          <span className="block text-xs text-gray-500">
+            {m.parameter_count} · {m.quantization ?? "—"} ·{" "}
+            {m.context_length ? `${(m.context_length / 1000).toFixed(0)}k ctx` : "—"}
+            {m.use_case ? ` · ${m.use_case}` : ""}
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-2">
+          {m.capabilities?.includes("Tool Use") && (
+            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600">tools</span>
+          )}
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            className={`h-3.5 w-3.5 text-gray-400 transition-transform ${expanded ? "rotate-180" : ""}`}
+            aria-hidden="true"
+          >
+            <path d="m6 9 6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-gray-100 bg-gray-50 px-3 py-3">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-600 sm:grid-cols-3">
+            <Spec label="Provider" value={m.provider} />
+            <Spec label="Architecture" value={m.architecture} />
+            <Spec label="License" value={m.license} />
+            <Spec label="Min RAM" value={m.min_ram_gb != null ? `${m.min_ram_gb} GB` : undefined} />
+            <Spec
+              label="Recommended RAM"
+              value={m.recommended_ram_gb != null ? `${m.recommended_ram_gb} GB` : undefined}
+            />
+            <Spec label="Min VRAM" value={m.min_vram_gb != null ? `${m.min_vram_gb} GB` : undefined} />
+            <Spec label="MoE" value={m.is_moe ? "Yes" : "No"} />
           </div>
-        )}
-        {model.gguf_sources && model.gguf_sources.length > 0 && (
+
+          {loadingFit && <p className="mt-2 text-xs text-gray-500">Checking fit against your hardware…</p>}
+          {fitError && <p className="mt-2 text-xs text-error">{fitError}</p>}
+          {fit && (
+            <div className="mt-2 flex items-center gap-2">
+              <FitBadge level={fit.fit_level} />
+              {fit.estimated_tps != null && (
+                <span className="text-xs text-gray-500">~{fit.estimated_tps.toFixed(0)} tok/s estimated</span>
+              )}
+            </div>
+          )}
+          {fit && <MemoryBar required={fit.memory_required_gb} available={fit.memory_available_gb} />}
+
           <div className="mt-3">
-            <p className="text-xs font-medium text-gray-500">GGUF sources</p>
-            <ul className="mt-1 space-y-0.5 text-xs text-gray-600">
-              {model.gguf_sources.map((s) => (
-                <li key={s.repo}>{s.provider}: {s.repo}</li>
-              ))}
-            </ul>
+            {alreadyInstalled ? (
+              <span className="inline-block rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500">
+                Already installed
+              </span>
+            ) : (
+              <InstallButton query={ggufRepo(m)} />
+            )}
           </div>
-        )}
-        <div className="mt-4">
-          <InstallButton query={ggufRepo(model)} />
         </div>
-      </div>
+      )}
+    </li>
+  );
+}
+
+function Spec({ label, value }: { label: string; value?: string | null }) {
+  if (!value) return null;
+  return (
+    <div>
+      <dt className="inline text-gray-400">{label}: </dt>
+      <dd className="inline text-gray-700">{value}</dd>
     </div>
   );
 }
@@ -691,7 +958,6 @@ function InstallButton({ query, compact }: { query: string | null; compact?: boo
       setLines((l) => [...l.slice(-40), line]);
       const m = line.match(/(\d{1,3})%/);
       if (m) setPct(parseInt(m[1], 10));
-      // Surface a human phase from llmfit's chatter.
       if (/download/i.test(line)) setPhase("Downloading model…");
       else if (/fetch|search/i.test(line)) setPhase("Finding best quantization…");
       else if (/verif|check/i.test(line)) setPhase("Verifying…");
@@ -721,7 +987,7 @@ function InstallButton({ query, compact }: { query: string | null; compact?: boo
     try {
       await invoke("download_model_llmfit", { query });
     } catch (e) {
-      logErr(`Model install of ${query} failed: ${String(e)}`);
+      logErr(`Model install of ${query} failed: ${errMsg(e)}`);
       setDownloading(false);
       setError("Couldn't start the download. Please try again.");
     }
@@ -738,11 +1004,11 @@ function InstallButton({ query, compact }: { query: string | null; compact?: boo
           : "Install";
 
   return (
-    <div className={compact ? "" : "mt-2"} onClick={(e) => e.stopPropagation()}>
+    <div className={compact ? "" : "w-full"} onClick={(e) => e.stopPropagation()}>
       <button
         onClick={start}
         disabled={downloading || !query || done}
-        className={`rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 ${
+        className={`rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 ${
           compact ? "" : "w-full"
         }`}
       >
@@ -752,21 +1018,21 @@ function InstallButton({ query, compact }: { query: string | null; compact?: boo
       {downloading && (
         <div className="mt-2">
           {pct !== null ? (
-            <div className="h-1.5 w-full overflow-hidden rounded bg-gray-100">
-              <div className="h-full bg-blue-600 transition-all" style={{ width: `${pct}%` }} />
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+              <div className="h-full bg-accent transition-all" style={{ width: `${pct}%` }} />
             </div>
           ) : (
-            <div className="h-1.5 w-full overflow-hidden rounded bg-gray-100">
-              <div className="h-full w-1/3 animate-pulse bg-blue-300" />
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+              <div className="h-full w-1/3 animate-pulse bg-accent/40" />
             </div>
           )}
           <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
-            <span>{phase}{pct !== null ? ` ${pct}%` : ""}</span>
+            <span>
+              {phase}
+              {pct !== null ? ` ${pct}%` : ""}
+            </span>
             {lines.length > 0 && (
-              <button
-                onClick={() => setShowLog((s) => !s)}
-                className="text-gray-400 hover:text-gray-600"
-              >
+              <button onClick={() => setShowLog((s) => !s)} className="text-gray-400 hover:text-gray-600">
                 {showLog ? "Hide details" : "Show details"}
               </button>
             )}
@@ -780,10 +1046,4 @@ function InstallButton({ query, compact }: { query: string | null; compact?: boo
       )}
     </div>
   );
-}
-
-// ---- utils ----------------------------------------------------------------
-
-function unique(values: string[]): string[] {
-  return [...new Set(values.filter(Boolean))].sort();
 }

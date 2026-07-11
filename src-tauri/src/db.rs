@@ -37,7 +37,21 @@ pub async fn init_db(app_data_dir: &std::path::Path) -> Result<Surreal<Db>> {
          DEFINE FIELD doc ON refs TYPE record<documents>;
          DEFINE FIELD source_label ON refs TYPE string;
          DEFINE FIELD target_label ON refs TYPE string;
-         DEFINE FIELD page ON refs TYPE int;",
+         DEFINE FIELD page ON refs TYPE int;
+
+         DEFINE TABLE chat_messages SCHEMAFULL;
+         DEFINE FIELD doc ON chat_messages TYPE option<record<documents>>;
+         DEFINE FIELD question ON chat_messages TYPE string;
+         DEFINE FIELD answer ON chat_messages TYPE string;
+         DEFINE FIELD page ON chat_messages TYPE option<int>;
+         DEFINE FIELD created_at ON chat_messages TYPE datetime DEFAULT time::now();
+
+         DEFINE TABLE simplifications SCHEMAFULL;
+         DEFINE FIELD doc ON simplifications TYPE record<documents>;
+         DEFINE FIELD page ON simplifications TYPE int;
+         DEFINE FIELD original ON simplifications TYPE string;
+         DEFINE FIELD simplified ON simplifications TYPE string;
+         DEFINE FIELD created_at ON simplifications TYPE datetime DEFAULT time::now();",
         crate::documents::schema_ddl(),
         crate::ai::EMBED_DIM
     );
