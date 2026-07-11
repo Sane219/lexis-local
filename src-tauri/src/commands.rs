@@ -5,6 +5,11 @@ use serde_json::json;
 use surrealdb::engine::local::Db;
 use surrealdb::Surreal;
 
+/// Emit a `log` event the frontend log console subscribes to.
+fn log(app: &AppHandle, level: &str, msg: &str) {
+    let _ = app.emit("log", json!({ "level": level, "msg": msg }));
+}
+
 use crate::ai;
 use crate::ai::Llm;
 use crate::documents::DocInfo;
@@ -98,6 +103,7 @@ pub async fn download_model_llmfit(app: AppHandle, query: String) -> Result<Stri
         .envs(crate::models::tool_env(&app))
         .spawn()
         .map_err(|e| format!("failed to spawn llmfit: {e}"))?;
+    log(&app, "info", &format!("downloading model: {query}"));
 
     let app_ = app.clone();
     let q = query.clone();
@@ -114,16 +120,20 @@ pub async fn download_model_llmfit(app: AppHandle, query: String) -> Result<Stri
                 CommandEvent::Terminated(payload) => {
                     let ok = payload.code == Some(0);
                     if ok {
+                        log(&app_, "info", &format!("model {q} download finished"));
                         let _ = app_.emit("llmfit-done", json!({ "query": q }));
                     } else {
+                        let msg = format!("model {q} download failed (exit {:?})", payload.code);
+                        log(&app_, "error", &msg);
                         let _ = app_.emit(
                             "llmfit-error",
-                            json!({ "query": q, "error": format!("exited with code {:?}", payload.code) }),
+                            json!({ "query": q, "error": msg }),
                         );
                     }
                     break;
                 }
                 CommandEvent::Error(e) => {
+                    log(&app_, "error", &format!("model {q} download error: {e}"));
                     let _ = app_.emit("llmfit-error", json!({ "query": q, "error": e }));
                     break;
                 }

@@ -7,6 +7,8 @@ import { DocumentList } from "./components/DocumentList";
 import { ChatPanel } from "./components/ChatPanel";
 import { InsightsPanel } from "./components/InsightsPanel";
 import { ModelLibrary } from "./components/ModelLibrary";
+import { LogPanel } from "./components/LogPanel";
+import { info, error, initLogBridge } from "./log";
 
 interface DocInfo {
   id: string;
@@ -58,9 +60,13 @@ function App() {
   const bytesMap = useRef<Map<string, Uint8Array>>(new Map());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const openPicker = useCallback(() => fileInputRef.current?.click(), []);
+  const openPicker = useCallback(() => {
+    info("Open PDF picker");
+    fileInputRef.current?.click();
+  }, []);
 
   const handleFile = async (name: string, bytes: Uint8Array) => {
+    info(`Ingesting PDF: ${name}`);
     setStatus("Ingesting...");
     setStatusType("info");
     try {
@@ -72,7 +78,9 @@ function App() {
       setStatusType("success");
       await loadDocs();
     } catch (e) {
-      setStatus(`Failed to ingest: ${errMsg(e)}`);
+      const m = errMsg(e);
+      error(`Ingest failed: ${m}`);
+      setStatus(`Failed to ingest: ${m}`);
       setStatusType("error");
     }
   };
@@ -115,6 +123,10 @@ function App() {
     loadDocs();
   }, [loadDocs]);
 
+  useEffect(() => {
+    initLogBridge();
+  }, []);
+
   const goPage = useCallback(
     (delta: number) => {
       if (!selected) return;
@@ -140,6 +152,7 @@ function App() {
   }, [goPage]);
 
   const handleSelect = (doc: DocInfo) => {
+    info(`Opened document: ${doc.name}`);
     setSelected(doc);
     setPageNum(1);
     const bytes = bytesMap.current.get(doc.id);
@@ -187,6 +200,7 @@ function App() {
             {status}
           </div>
         )}
+        <LogPanel />
       </aside>
       <main className="flex-1 overflow-y-auto p-4 bg-white">
         {pdfBytes && selected ? (
@@ -272,7 +286,10 @@ function FirstRun({ onOpen }: { onOpen: () => void }) {
           surface definitions, and check for anomalies. Nothing leaves this device.
         </p>
         <button
-          onClick={onOpen}
+          onClick={() => {
+            info("Open PDF picker");
+            onOpen();
+          }}
           className="mt-5 inline-flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
         >
           Open PDF

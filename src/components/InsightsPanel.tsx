@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { errMsg } from "../utils";
+import { info, error } from "../log";
 
 interface Definition {
   term: string;
@@ -73,11 +74,14 @@ export function InsightsPanel({
   }, [references, sections]);
 
   const check = async () => {
+    info("Checking anomalies");
     setBusy(true);
     try {
       setAnomalies(await invoke<string>("detect_anomalies", { docId }));
     } catch (e) {
-      setAnomalies(`Error: ${errMsg(e)}`);
+      const m = errMsg(e);
+      error(`Anomaly check failed: ${m}`);
+      setAnomalies(`Error: ${m}`);
     } finally {
       setBusy(false);
     }

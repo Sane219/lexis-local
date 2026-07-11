@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { info, error as logErr } from "../log";
 
 // ---- types ----------------------------------------------------------------
 
@@ -97,10 +98,12 @@ export function ModelLibrary() {
   }, []);
 
   const install = async (dependency: "llama_cpp" | "llmfit") => {
+    info(`Installing ${dependency}`);
     setInstalling((s) => ({ ...s, [dependency]: true }));
     try {
       await invoke("install_dependency", { dependency });
     } catch (e) {
+      logErr(`Install of ${dependency} failed: ${String(e)}`);
       setDepProgress((p) => ({
         ...p,
         [dependency]: { stage: "error", detail: String(e), percent: null },
@@ -584,6 +587,7 @@ function InstallButton({ query, compact }: { query: string; compact?: boolean })
   }, [query]);
 
   const start = async () => {
+    info(`Installing model: ${query}`);
     setDownloading(true);
     setDone(false);
     setError(null);
@@ -592,6 +596,7 @@ function InstallButton({ query, compact }: { query: string; compact?: boolean })
     try {
       await invoke("download_model_llmfit", { query });
     } catch (e) {
+      logErr(`Model install of ${query} failed: ${String(e)}`);
       setDownloading(false);
       setError(String(e));
     }

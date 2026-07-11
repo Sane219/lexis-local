@@ -4,7 +4,15 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde::Serialize;
+use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
+
+/// Emit a `log` event the frontend log console subscribes to. Every notable
+/// backend action (install steps, download failures, command errors) goes here
+/// so nothing fails silently.
+fn log(app: &AppHandle, level: &str, msg: &str) {
+    let _ = app.emit("log", json!({ "level": level, "msg": msg }));
+}
 
 // ponytail: we install llmfit + llama.cpp prebuilt binaries into
 // <app_data>/bin and prepend that dir to PATH for every shell we spawn, so the
@@ -133,11 +141,16 @@ pub async fn install_dependency(app: AppHandle, dependency: String) -> Result<()
         let _ = app.emit(
             "dependency-install",
             InstallProgress {
-                dependency: dep,
+                dependency: dep.clone(),
                 stage: stage.into(),
-                detail,
+                detail: detail.clone(),
                 percent,
             },
+        );
+        log(
+            &app,
+            if stage == "error" { "error" } else { "info" },
+            &format!("[{dep}] {stage}: {detail}"),
         );
     });
     Ok(())
@@ -153,10 +166,12 @@ fn install_blocking(
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
 
+    log(app, "info", &format!("installing {dep} from {repo}"));
     emit(app, dep, "resolving", format!("Finding latest {repo} release"), None);
     let assets = fetch_release_assets(repo)?;
     let asset = pick_asset(&assets, os, arch)
         .ok_or_else(|| format!("no {os}/{arch} prebuilt asset found in {repo}"))?;
+    log(app, "info", &format!("[{dep}] resolved asset {}", asset.name));
 
     let tmp = std::env::temp_dir().join(format!("lexis-{dep}"));
     let _ = std::fs::create_dir_all(&tmp);
@@ -164,6 +179,7 @@ fn install_blocking(
 
     emit(app, dep, "downloading", format!("Downloading {}", asset.name), Some(0));
     download_with_progress(app, dep, &asset.url, &archive_path)?;
+    log(app, "info", &format!("[{dep}] download complete"));
 
     emit(app, dep, "extracting", "Extracting archive".into(), Some(80));
     let extract_dir = tmp.join("extracted");
@@ -171,6 +187,7 @@ fn install_blocking(
     std::fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
     let target = if os == "windows" { win_bin } else { bin };
     let extracted = extract(&archive_path, &extract_dir, target, os)?;
+    log(app, "info", &format!("[{dep}] extracted -> {}", extracted.display()));
 
     let dest_dir = bin_dir(app);
     std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
@@ -186,6 +203,7 @@ fn install_blocking(
         .arg("--version")
         .output()
         .map_err(|e| format!("installed binary won't run: {e}"))?;
+    log(app, "info", &format!("[{dep}] verified, installed at {}", dest_bin.display()));
 
     let _ = std::fs::remove_dir_all(&tmp);
     Ok(())
@@ -311,8 +329,12 @@ fn download_with_progress(
     };
 
     let partial = dest.with_extension("part");
+    // `-f` makes curl exit non-zero on HTTP errors (404 etc.) instead of
+    // writing an empty/error body. Stderr is piped so we can surface the real
+    // reason a download failed instead of failing cryptically at extract time.
     let mut child = Command::new("curl")
-        .args(["-sL", "-o", &partial.to_string_lossy(), url])
+        .args(["-fsSL", "-o", &partial.to_string_lossy(), url])
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("curl spawn failed: {e}"))?;
 
@@ -341,12 +363,28 @@ fn download_with_progress(
             break;
         }
         if start.elapsed() > Duration::from_secs(600) {
-            let _ = std::process::Command::new("kill")
-                .arg(child.id().to_string())
-                .output();
+            let _ = child.kill();
+            let _ = child.wait();
             return Err("download timed out".into());
         }
         std::thread::sleep(Duration::from_millis(400));
+    }
+    let status = child
+        .wait()
+        .map_err(|e| format!("curl wait failed: {e}"))?;
+    if !status.success() {
+        let mut stderr = String::new();
+        if let Some(mut s) = child.stderr.take() {
+            let _ = std::io::Read::read_to_string(&mut s, &mut stderr);
+        }
+        let _ = std::fs::remove_file(&partial);
+        let msg = format!(
+            "download failed (curl {}): {}",
+            status.code().unwrap_or(-1),
+            stderr.trim().lines().last().unwrap_or("unknown error")
+        );
+        log(app, "error", &msg);
+        return Err(msg);
     }
     let _ = std::fs::rename(&partial, dest);
     Ok(())

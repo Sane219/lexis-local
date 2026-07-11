@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { errMsg } from "../utils";
+import { info, error } from "../log";
 
 interface Msg {
   role: "user" | "assistant";
@@ -20,6 +21,7 @@ export function ChatPanel({ onNavigate }: { onNavigate?: (page: number) => void 
   const send = async () => {
     const question = input.trim();
     if (!question || busy) return;
+    info(`Ask: ${question}`);
     setInput("");
     setMessages((m) => [...m, { role: "user", text: question }]);
     setBusy(true);
@@ -28,7 +30,9 @@ export function ChatPanel({ onNavigate }: { onNavigate?: (page: number) => void 
       setMessages((m) => [...m, { role: "assistant", text: res.answer }]);
       if (res.page != null) onNavigate?.(res.page);
     } catch (e) {
-       setMessages((m) => [...m, { role: "assistant", text: `Error: ${errMsg(e)}` }]);
+      const m = errMsg(e);
+      error(`Ask failed: ${m}`);
+       setMessages((m) => [...m, { role: "assistant", text: `Error: ${m}` }]);
     } finally {
       setBusy(false);
     }
