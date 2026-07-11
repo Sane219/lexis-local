@@ -238,36 +238,47 @@ fn fetch_release_assets(repo: &str) -> Result<Vec<Asset>, String> {
     Ok(assets)
 }
 
-/// Pick the asset matching the current OS/arch from a release's asset list.
-/// Works for both llama.cpp (`ubuntu-x64`, `win-x64`, `macos-arm64`) and llmfit
+/// Pick the asset matching the current OS/arch from a release's asset list,
+/// preferring the plain CPU build over GPU/vendor variants. Handles both
+/// llama.cpp (`ubuntu-x64`, `win-cpu-x64`, `macos-arm64`) and llmfit
 /// (`unknown-linux-gnu`, `pc-windows-msvc`, `apple-darwin`) naming.
 fn pick_asset(assets: &[Asset], os: &str, arch: &str) -> Option<Asset> {
-    let os_kw = match os {
-        "linux" => "linux",
-        "macos" => "macos",
-        "windows" => "windows",
-        other => other,
+    let os_kw: &[&str] = match os {
+        "linux" => &["linux", "ubuntu"],
+        "macos" => &["macos", "apple-darwin", "darwin"],
+        "windows" => &["windows", "win"],
+        other => &[other],
     };
-    let arch_kw = match arch {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => other,
+    let arch_kw: &[&str] = match arch {
+        "x86_64" => &["x86_64", "x64", "amd64"],
+        "aarch64" => &["aarch64", "arm64"],
+        other => &[other],
     };
+    // GPU/vendor variants we should not pick by default.
+    let variant_kw = [
+        "vulkan", "rocm", "sycl", "openvino", "cuda", "cudart", "hip", "adreno", "opencl", "rpc",
+        "android", "s390x", "ui", "xcframework",
+    ];
+
     let mut best: Option<&Asset> = None;
-    let mut best_score: i32 = -1;
+    let mut best_score: i32 = i32::MIN;
     for a in assets {
         let n = a.name.to_lowercase();
         if n.contains(".sha256") || n.contains(".sig") || n.contains(".yml") {
             continue;
         }
-        let os_ok = n.contains(&os_kw.to_lowercase());
-        let arch_ok = n.contains(&arch_kw.to_lowercase())
-            || (arch == "x86_64" && (n.contains("amd64") || n.contains("x64")));
+        let os_ok = os_kw.iter().any(|k| n.contains(*k));
+        let arch_ok = arch_kw.iter().any(|k| n.contains(*k));
         if !os_ok || !arch_ok {
             continue;
         }
         let is_archive = n.ends_with(".zip") || n.ends_with(".tar.gz") || n.ends_with(".tgz");
-        let score = if is_archive { 10 } else { 0 };
+        if !is_archive {
+            continue;
+        }
+        // Plain CPU build (no variant keyword) scores highest.
+        let penalty: i32 = variant_kw.iter().filter(|k| n.contains(*k)).count() as i32 * 100;
+        let score = 1000 - penalty;
         if score > best_score {
             best_score = score;
             best = Some(a);
