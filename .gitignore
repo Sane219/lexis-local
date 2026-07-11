@@ -29,3 +29,4 @@ graphify-out/
 # Tooling config
 .claude/
 .opencode/
+.impeccable/

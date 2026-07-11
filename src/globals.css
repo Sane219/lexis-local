@@ -1,5 +1,30 @@
 @import "tailwindcss";
 
+@theme {
+  /* Tinted neutrals — instrument gray leans subtly toward the reading-blue
+     brand hue (≈255) so surfaces cohere with the accent instead of reading
+     as dead pure gray. Lightness mirrors Tailwind's default gray ramp. */
+  --color-gray-50:  oklch(0.985 0.005 255);
+  --color-gray-100: oklch(0.967 0.007 255);
+  --color-gray-200: oklch(0.928 0.009 255);
+  --color-gray-300: oklch(0.872 0.011 255);
+  --color-gray-400: oklch(0.707 0.012 255);
+  --color-gray-500: oklch(0.551 0.013 255);
+  --color-gray-600: oklch(0.446 0.013 255);
+  --color-gray-700: oklch(0.373 0.012 255);
+  --color-gray-800: oklch(0.278 0.011 255);
+  --color-gray-900: oklch(0.21 0.010 255);
+
+  /* Semantic state colors — reserved for state indicators only (status,
+     errors, success, progress), never decoration. */
+  --color-success:    oklch(0.48 0.14 150);
+  --color-success-bg: oklch(0.972 0.022 152);
+  --color-error:      oklch(0.48 0.22 25);
+  --color-error-bg:   oklch(0.972 0.026 25);
+  --color-warning:    oklch(0.55 0.13 75);
+  --color-info:       oklch(0.546 0.245 263);
+}
+
 html,
 body,
 #root {
@@ -104,4 +129,11 @@ body,
 }
 .textLayer span.lexis-ref:hover {
   background: rgb(37 99 235 / 0.2);
+}
+
+/* Keyboard focus: Tailwind preflight strips the native outline, so restore a
+   visible ring for every interactive element (WCAG AA, Sam persona). */
+:focus-visible {
+  outline: 2px solid rgb(37 99 235);
+  outline-offset: 2px;
 }

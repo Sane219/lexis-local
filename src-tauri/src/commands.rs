@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_shell::ShellExt;
+use serde_json::json;
 
 use surrealdb::engine::local::Db;
 use surrealdb::Surreal;
@@ -94,10 +95,12 @@ pub async fn download_model_llmfit(app: AppHandle, query: String) -> Result<Stri
         .shell()
         .command("llmfit")
         .args(["download", &query])
+        .envs(crate::models::tool_env(&app))
         .spawn()
         .map_err(|e| format!("failed to spawn llmfit: {e}"))?;
 
     let app_ = app.clone();
+    let q = query.clone();
     tauri::async_runtime::spawn(async move {
         let _child = child;
         while let Some(event) = rx.recv().await {
@@ -105,20 +108,23 @@ pub async fn download_model_llmfit(app: AppHandle, query: String) -> Result<Stri
                 CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
                     let line = String::from_utf8_lossy(&bytes).trim().to_string();
                     if !line.is_empty() {
-                        let _ = app_.emit("llmfit-progress", line);
+                        let _ = app_.emit("llmfit-progress", json!({ "query": q, "line": line }));
                     }
                 }
                 CommandEvent::Terminated(payload) => {
                     let ok = payload.code == Some(0);
                     if ok {
-                        let _ = app_.emit("llmfit-done", "");
+                        let _ = app_.emit("llmfit-done", json!({ "query": q }));
                     } else {
-                        let _ = app_.emit("llmfit-error", format!("exited with code {:?}", payload.code));
+                        let _ = app_.emit(
+                            "llmfit-error",
+                            json!({ "query": q, "error": format!("exited with code {:?}", payload.code) }),
+                        );
                     }
                     break;
                 }
                 CommandEvent::Error(e) => {
-                    let _ = app_.emit("llmfit-error", e);
+                    let _ = app_.emit("llmfit-error", json!({ "query": q, "error": e }));
                     break;
                 }
                 _ => {}

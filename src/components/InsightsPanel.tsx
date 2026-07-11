@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { errMsg } from "../utils";
 
 interface Definition {
   term: string;
@@ -76,7 +77,7 @@ export function InsightsPanel({
     try {
       setAnomalies(await invoke<string>("detect_anomalies", { docId }));
     } catch (e) {
-      setAnomalies(`Error: ${e}`);
+      setAnomalies(`Error: ${errMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -87,7 +88,7 @@ export function InsightsPanel({
       <section>
         <h2 className="text-xs font-semibold text-gray-500 uppercase mb-2">Definitions</h2>
         {defs.length === 0 ? (
-          <p className="text-xs text-gray-400">None extracted.</p>
+          <p className="text-xs text-gray-500">None extracted.</p>
         ) : (
           <dl className="space-y-2">
             {defs.map((d, i) => (
@@ -103,7 +104,7 @@ export function InsightsPanel({
       <section>
         <h2 className="text-xs font-semibold text-gray-500 uppercase mb-2">Cross-references</h2>
         {backlinks.length === 0 ? (
-          <p className="text-xs text-gray-400">No internal references found.</p>
+          <p className="text-xs text-gray-500">No internal references found.</p>
         ) : (
           <ul className="space-y-1.5">
             {backlinks.map((b) => (
@@ -132,7 +133,7 @@ export function InsightsPanel({
           Cross-document links
         </h2>
         {crossLinks.length === 0 ? (
-          <p className="text-xs text-gray-400">No terms shared with other documents.</p>
+          <p className="text-xs text-gray-500">No terms shared with other documents.</p>
         ) : (
           <dl className="space-y-2">
             {crossLinks.map((c) => (
@@ -164,7 +165,7 @@ export function InsightsPanel({
           {busy ? "Checking…" : "Check anomalies"}
         </button>
         {anomalies && (
-          <p className="mt-2 text-sm text-gray-700 whitespace-pre-wrap">{anomalies}</p>
+          <p className={`mt-2 text-sm whitespace-pre-wrap ${anomalies.startsWith("Error:") ? "text-error" : "text-gray-700"}`} role="status">{anomalies}</p>
         )}
       </section>
     </div>

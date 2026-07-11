@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod documents;
 mod ingest;
+mod models;
 mod pipeline;
 mod repo;
 
@@ -48,6 +49,7 @@ fn spawn_llama(app: &AppHandle) -> Option<CommandChild> {
             &port.to_string(),
             "--embeddings",
         ])
+        .envs(crate::models::tool_env(app))
         .spawn()
     {
         Ok((mut rx, child)) => {
@@ -89,7 +91,12 @@ pub fn run() {
             commands::list_references,
             commands::cross_doc_links,
             commands::simplify_text,
-            commands::download_model_llmfit
+            commands::download_model_llmfit,
+            models::tool_status,
+            models::install_dependency,
+            models::llmfit_catalog,
+            models::llmfit_recommend,
+            models::llmfit_model_info,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
